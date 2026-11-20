@@ -1,0 +1,6 @@
+{
+  "name": "Go To Truckers - Closer Playbook & AI Assistant",
+  "description": "High-density B2B freight brokerage closer playbook, objection handling scripts, and 10-second real-time AI phone copilot for Go To Truckers sales representatives.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

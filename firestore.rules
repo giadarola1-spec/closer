@@ -1,0 +1,284 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global default-deny safety net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- Global Helpers ---
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isValidTeamId(id) {
+      return id in ['gtt-closers', 'gtt-closers-9'];
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerified() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isAdmin() {
+      return isVerified() && (
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid)) ||
+        request.auth.token.email == 'giadarola1@gmail.com'
+      );
+    }
+
+    function isTeamMember() {
+      return isVerified() && exists(/databases/$(database)/documents/members/$(request.auth.uid));
+    }
+
+    // --- Validation Blueprints ---
+    function isValidMember(data) {
+      return data.keys().hasAll(['uid', 'teamId', 'displayName', 'focus', 'statusText', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'teamId', 'displayName', 'focus', 'statusText', 'dailyCalls', 'createdAt', 'updatedAt'])
+        && isValidId(data.uid)
+        && isValidTeamId(data.teamId)
+        && data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 60
+        && data.focus is string && data.focus.size() <= 80
+        && data.statusText is string && data.statusText.size() <= 140
+        && (!('dailyCalls' in data) || (data.dailyCalls is int && data.dailyCalls >= 0 && data.dailyCalls <= 10000))
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidPrivateUser(data) {
+      return data.keys().hasAll(['uid', 'email', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'email', 'createdAt', 'updatedAt'])
+        && isValidId(data.uid)
+        && data.email is string && data.email.size() <= 200
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidPost(data) {
+      return data.keys().hasAll([
+          'teamId', 'authorId', 'authorName', 'category', 'title', 'body',
+          'lane', 'equipment', 'loadsPerWeek', 'stageStatus', 'pinned',
+          'replyCount', 'likeCount', 'lastCommentId', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'teamId', 'authorId', 'authorName', 'category', 'title', 'body',
+          'lane', 'equipment', 'loadsPerWeek', 'stageStatus', 'pinned',
+          'replyCount', 'likeCount', 'lastCommentId', 'createdAt', 'updatedAt'
+        ])
+        && isValidTeamId(data.teamId)
+        && isValidId(data.authorId)
+        && data.authorName is string && data.authorName.size() >= 1 && data.authorName.size() <= 60
+        && data.category in ['post', 'message', 'idea', 'mql', 'sql', 'opening']
+        && data.title is string && data.title.size() <= 140
+        && data.body is string && data.body.size() >= 1 && data.body.size() <= 4000
+        && data.lane is string && data.lane.size() <= 80
+        && data.equipment in ['', 'Dry Van', 'Reefer', 'Both']
+        && data.loadsPerWeek is string && data.loadsPerWeek.size() <= 30
+        && data.stageStatus in ['open', 'in_progress', 'won', 'archived']
+        && data.pinned is bool
+        && data.replyCount is int && data.replyCount >= 0
+        && data.likeCount is int && data.likeCount >= 0
+        && data.lastCommentId is string && data.lastCommentId.size() <= 128
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidComment(data) {
+      return data.keys().hasAll(['teamId', 'postId', 'authorId', 'authorName', 'body', 'createdAt'])
+        && data.keys().hasOnly(['teamId', 'postId', 'authorId', 'authorName', 'body', 'createdAt'])
+        && isValidTeamId(data.teamId)
+        && isValidId(data.postId)
+        && isValidId(data.authorId)
+        && data.authorName is string && data.authorName.size() >= 1 && data.authorName.size() <= 60
+        && data.body is string && data.body.size() >= 1 && data.body.size() <= 2000
+        && data.createdAt is timestamp;
+    }
+
+    function isValidLike(data) {
+      return data.keys().hasAll(['teamId', 'postId', 'userId', 'createdAt'])
+        && data.keys().hasOnly(['teamId', 'postId', 'userId', 'createdAt'])
+        && isValidTeamId(data.teamId)
+        && isValidId(data.postId)
+        && isValidId(data.userId)
+        && data.createdAt is timestamp;
+    }
+
+    // --- Collection Rules ---
+
+    // Admin registry (read self only; managed out-of-band)
+    match /admins/{adminId} {
+      allow get: if isVerified() && isValidId(adminId) && request.auth.uid == adminId;
+      allow list, create, update, delete: if false;
+    }
+
+    // Private PII user info (strict owner or admin only)
+    match /users/{userId} {
+      allow get: if isVerified() && isValidId(userId) && (request.auth.uid == userId || isAdmin());
+      allow list: if false;
+      allow create: if isVerified()
+        && isValidId(userId)
+        && userId == request.auth.uid
+        && isValidPrivateUser(incoming())
+        && incoming().uid == request.auth.uid
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isVerified()
+        && isValidId(userId)
+        && isValidPrivateUser(incoming())
+        && (request.auth.uid == userId || isAdmin())
+        && incoming().uid == existing().uid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly(['email', 'updatedAt']);
+      allow delete: if isAdmin() && isValidId(userId);
+    }
+
+    // Public closers team roster profiles (no PII)
+    match /members/{memberId} {
+      allow get: if isVerified() && isValidId(memberId) && (
+        (resource == null && memberId == request.auth.uid) ||
+        (resource != null && isValidTeamId(existing().teamId))
+      );
+      allow list: if isVerified() && isValidTeamId(resource.data.teamId);
+      allow create: if isVerified()
+        && isValidId(memberId)
+        && memberId == request.auth.uid
+        && isValidMember(incoming())
+        && 'dailyCalls' in incoming()
+        && incoming().uid == request.auth.uid
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isVerified()
+        && isValidId(memberId)
+        && isValidMember(incoming())
+        && (request.auth.uid == memberId || isAdmin())
+        && incoming().uid == existing().uid
+        && isValidTeamId(incoming().teamId)
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly(['teamId', 'displayName', 'focus', 'statusText', 'dailyCalls', 'updatedAt']);
+      allow delete: if isAdmin() && isValidId(memberId);
+    }
+
+    // Shared team feed posts
+    match /posts/{postId} {
+      allow get: if isVerified() && isValidId(postId) && isValidTeamId(existing().teamId);
+      allow list: if isVerified() && isValidTeamId(resource.data.teamId);
+      allow create: if isVerified()
+        && isValidId(postId)
+        && isValidPost(incoming())
+        && incoming().authorId == request.auth.uid
+        && incoming().replyCount == 0
+        && incoming().likeCount == 0
+        && incoming().lastCommentId == ''
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && isTeamMember();
+      allow update: if isVerified()
+        && isValidId(postId)
+        && isValidPost(incoming())
+        && incoming().teamId == existing().teamId
+        && incoming().authorId == existing().authorId
+        && incoming().authorName == existing().authorName
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (isTeamMember() || isAdmin())
+        && (
+          isAdmin()
+          || (
+            // Action 1: Author updates content/pipeline state (blocked if archived)
+            existing().authorId == request.auth.uid
+            && existing().stageStatus != 'archived'
+            && incoming().replyCount == existing().replyCount
+            && incoming().likeCount == existing().likeCount
+            && incoming().lastCommentId == existing().lastCommentId
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'category', 'title', 'body', 'lane', 'equipment', 'loadsPerWeek', 'stageStatus', 'pinned', 'updatedAt'
+            ])
+          )
+          || (
+            // Action 2: Atomic comment counter increment with existsAfter verification
+            isValidId(incoming().lastCommentId)
+            && incoming().replyCount == existing().replyCount + 1
+            && incoming().likeCount == existing().likeCount
+            && incoming().diff(existing()).affectedKeys().hasOnly(['replyCount', 'lastCommentId', 'updatedAt'])
+            && existsAfter(/databases/$(database)/documents/posts/$(postId)/comments/$(incoming().lastCommentId))
+          )
+          || (
+            // Action 3: Atomic like creation & count increment
+            incoming().likeCount == existing().likeCount + 1
+            && incoming().replyCount == existing().replyCount
+            && incoming().lastCommentId == existing().lastCommentId
+            && incoming().diff(existing()).affectedKeys().hasOnly(['likeCount', 'updatedAt'])
+            && !exists(/databases/$(database)/documents/posts/$(postId)/likes/$(request.auth.uid))
+            && existsAfter(/databases/$(database)/documents/posts/$(postId)/likes/$(request.auth.uid))
+          )
+          || (
+            // Action 4: Atomic like deletion & count decrement
+            existing().likeCount > 0
+            && incoming().likeCount == existing().likeCount - 1
+            && incoming().replyCount == existing().replyCount
+            && incoming().lastCommentId == existing().lastCommentId
+            && incoming().diff(existing()).affectedKeys().hasOnly(['likeCount', 'updatedAt'])
+            && exists(/databases/$(database)/documents/posts/$(postId)/likes/$(request.auth.uid))
+            && !existsAfter(/databases/$(database)/documents/posts/$(postId)/likes/$(request.auth.uid))
+          )
+        );
+      allow delete: if isVerified() && isValidId(postId) && (existing().authorId == request.auth.uid || isAdmin());
+
+      // Threaded replies
+      match /comments/{commentId} {
+        allow get: if isVerified()
+          && isValidId(postId)
+          && isValidId(commentId)
+          && isValidTeamId(existing().teamId)
+          && exists(/databases/$(database)/documents/posts/$(postId));
+        allow list: if isVerified() && isValidId(postId) && isValidTeamId(resource.data.teamId);
+        allow create: if isVerified()
+          && isValidId(postId)
+          && isValidId(commentId)
+          && isValidComment(incoming())
+          && incoming().postId == postId
+          && incoming().authorId == request.auth.uid
+          && incoming().createdAt == request.time
+          && exists(/databases/$(database)/documents/posts/$(postId))
+          && isTeamMember();
+        allow update: if false;
+        allow delete: if isVerified() && isValidId(postId) && isValidId(commentId) && (existing().authorId == request.auth.uid || isAdmin());
+      }
+
+      // Per-closer post likes
+      match /likes/{likeUserId} {
+        allow get: if isVerified() && isValidId(postId) && isValidId(likeUserId) && (
+          (resource == null && likeUserId == request.auth.uid) ||
+          (resource != null && isValidTeamId(existing().teamId))
+        );
+        allow list: if isVerified() && isValidId(postId) && isValidTeamId(resource.data.teamId);
+        allow create: if isVerified()
+          && isValidId(postId)
+          && isValidId(likeUserId)
+          && likeUserId == request.auth.uid
+          && isValidLike(incoming())
+          && incoming().postId == postId
+          && incoming().userId == request.auth.uid
+          && incoming().createdAt == request.time
+          && exists(/databases/$(database)/documents/posts/$(postId))
+          && isTeamMember();
+        allow update: if false;
+        allow delete: if isVerified() && isValidId(postId) && isValidId(likeUserId) && (likeUserId == request.auth.uid || isAdmin());
+      }
+    }
+  }
+}

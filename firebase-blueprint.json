@@ -1,0 +1,251 @@
+{
+  "entities": {
+    "TeamMember": {
+      "title": "TeamMember",
+      "description": "Public team profile for a Go To Truckers closer (no PII).",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "teamId": {
+          "type": "string",
+          "enum": ["gtt-closers", "gtt-closers-9"]
+        },
+        "displayName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 60
+        },
+        "focus": {
+          "type": "string",
+          "maxLength": 80
+        },
+        "statusText": {
+          "type": "string",
+          "maxLength": 140
+        },
+        "dailyCalls": {
+          "type": "integer",
+          "description": "Number of calls this closer is getting per day (0-10000)."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["uid", "teamId", "displayName", "focus", "statusText", "dailyCalls", "createdAt", "updatedAt"]
+    },
+    "PrivateUser": {
+      "title": "PrivateUser",
+      "description": "Private PII record strictly accessible by the owning closer or admin.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "email": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["uid", "email", "createdAt", "updatedAt"]
+    },
+    "TeamPost": {
+      "title": "TeamPost",
+      "description": "Shared team post with optional title and body.",
+      "type": "object",
+      "properties": {
+        "teamId": {
+          "type": "string",
+          "enum": ["gtt-closers", "gtt-closers-9"]
+        },
+        "authorId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "authorName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 60
+        },
+        "category": {
+          "type": "string",
+          "enum": ["post", "message", "idea", "mql", "sql", "opening"]
+        },
+        "title": {
+          "type": "string",
+          "maxLength": 140
+        },
+        "body": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4000
+        },
+        "lane": {
+          "type": "string",
+          "maxLength": 80
+        },
+        "equipment": {
+          "type": "string",
+          "enum": ["", "Dry Van", "Reefer", "Both"]
+        },
+        "loadsPerWeek": {
+          "type": "string",
+          "maxLength": 30
+        },
+        "stageStatus": {
+          "type": "string",
+          "enum": ["open", "in_progress", "won", "archived"]
+        },
+        "pinned": {
+          "type": "boolean"
+        },
+        "replyCount": {
+          "type": "integer"
+        },
+        "likeCount": {
+          "type": "integer"
+        },
+        "lastCommentId": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "teamId",
+        "authorId",
+        "authorName",
+        "category",
+        "title",
+        "body",
+        "lane",
+        "equipment",
+        "loadsPerWeek",
+        "stageStatus",
+        "pinned",
+        "replyCount",
+        "likeCount",
+        "lastCommentId",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "PostComment": {
+      "title": "PostComment",
+      "description": "Reply or coaching note from a closer on a shared post.",
+      "type": "object",
+      "properties": {
+        "teamId": {
+          "type": "string",
+          "enum": ["gtt-closers", "gtt-closers-9"]
+        },
+        "postId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "authorId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "authorName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 60
+        },
+        "body": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["teamId", "postId", "authorId", "authorName", "body", "createdAt"]
+    },
+    "PostLike": {
+      "title": "PostLike",
+      "description": "Single closer reaction/like on a post.",
+      "type": "object",
+      "properties": {
+        "teamId": {
+          "type": "string",
+          "enum": ["gtt-closers", "gtt-closers-9"]
+        },
+        "postId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "userId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["teamId", "postId", "userId", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/members/{memberId}": {
+      "schema": { "$ref": "#/entities/TeamMember" },
+      "description": "Public closer profiles including daily call counts."
+    },
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/PrivateUser" },
+      "description": "Private PII records isolated per authenticated user."
+    },
+    "/posts/{postId}": {
+      "schema": { "$ref": "#/entities/TeamPost" },
+      "description": "Shared team feed of messages, ideas, MQLs, SQLs, and openings."
+    },
+    "/posts/{postId}/comments/{commentId}": {
+      "schema": { "$ref": "#/entities/PostComment" },
+      "description": "Threaded replies from closers on a shared post."
+    },
+    "/posts/{postId}/likes/{likeUserId}": {
+      "schema": { "$ref": "#/entities/PostLike" },
+      "description": "Per-user post likes synchronized atomically with post likeCount."
+    }
+  }
+}
