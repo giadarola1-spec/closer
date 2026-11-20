@@ -26,11 +26,14 @@ import {
   SidebarChannel,
   TeamMember,
   TeamPost,
+  DirectThread,
 } from './types/team.ts';
 import { Sidebar } from './components/Sidebar.tsx';
 import { TeamFeedView } from './components/TeamFeedView.tsx';
 import { RosterView } from './components/RosterView.tsx';
+import { DirectMessagesView } from './components/DirectMessagesView.tsx';
 import { Toast } from './components/Toast.tsx';
+import { sanitizePhotoUrl } from './utils/image.ts';
 
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
@@ -43,9 +46,11 @@ export default function App() {
 
   const [members, setMembers] = useState<TeamMember[]>([]);
   const [posts, setPosts] = useState<TeamPost[]>([]);
+  const [threads, setThreads] = useState<DirectThread[]>([]);
   const [isLoadingPosts, setIsLoadingPosts] = useState(true);
 
   const [activeChannel, setActiveChannel] = useState<SidebarChannel>('feed');
+  const [selectedDmUserId, setSelectedDmUserId] = useState<string | null>(null);
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
@@ -80,6 +85,8 @@ export default function App() {
         setProfileReady(false);
         setMembers([]);
         setPosts([]);
+        setThreads([]);
+        setSelectedDmUserId(null);
         setIsLoadingPosts(false);
       }
     });
@@ -119,19 +126,27 @@ export default function App() {
       }
 
       const memberRef = doc(db, 'members', user.uid);
+      const initialGooglePhoto = sanitizePhotoUrl(user.photoURL);
       try {
         const memberSnap = await getDoc(memberRef);
         if (memberSnap.exists()) {
           const existingData = memberSnap.data();
-          const needsMigration =
-            typeof existingData.dailyCalls !== 'number' || existingData.teamId !== TEAM_ID;
           const resolvedDailyCalls =
             typeof existingData.dailyCalls === 'number' ? existingData.dailyCalls : 0;
+          const resolvedPhotoUrl =
+            typeof existingData.photoUrl === 'string'
+              ? existingData.photoUrl
+              : initialGooglePhoto;
+          const needsMigration =
+            typeof existingData.dailyCalls !== 'number' ||
+            typeof existingData.photoUrl !== 'string' ||
+            existingData.teamId !== TEAM_ID;
 
           if (needsMigration) {
             await updateDoc(memberRef, {
               teamId: TEAM_ID,
               dailyCalls: resolvedDailyCalls,
+              photoUrl: resolvedPhotoUrl,
               updatedAt: serverTimestamp(),
             });
           }
@@ -142,6 +157,7 @@ export default function App() {
               ...existingData,
               teamId: TEAM_ID,
               dailyCalls: resolvedDailyCalls,
+              photoUrl: resolvedPhotoUrl,
             } as TeamMember);
             setProfileReady(true);
           }
@@ -161,6 +177,7 @@ export default function App() {
             focus: '',
             statusText: 'On the phones',
             dailyCalls: 0,
+            photoUrl: initialGooglePhoto,
             createdAt: serverTimestamp(),
             updatedAt: serverTimestamp(),
           });
@@ -174,6 +191,7 @@ export default function App() {
               focus: '',
               statusText: 'On the phones',
               dailyCalls: 0,
+              photoUrl: initialGooglePhoto,
               createdAt: null,
               updatedAt: null,
             });
@@ -232,9 +250,25 @@ export default function App() {
       }
     );
 
+    const dmsQuery = query(
+      collection(db, 'dms'),
+      where('participantIds', 'array-contains', user.uid)
+    );
+    const unsubDms = onSnapshot(
+      dmsQuery,
+      (snap) => {
+        const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }) as DirectThread);
+        setThreads(list);
+      },
+      (error) => {
+        handleFirestoreError(error, OperationType.LIST, 'dms');
+      }
+    );
+
     return () => {
       unsubMembers();
       unsubPosts();
+      unsubDms();
     };
   }, [authReady, user, profileReady]);
 
@@ -267,8 +301,13 @@ export default function App() {
     }
   };
 
+  const handleOpenDm = (targetUid: string) => {
+    setSelectedDmUserId(targetUid);
+    setActiveChannel('messages');
+  };
+
   const handleFocusComposer = () => {
-    if (activeChannel === 'roster') {
+    if (activeChannel !== 'feed') {
       setActiveChannel('feed');
     }
     window.setTimeout(() => {
@@ -366,7 +405,11 @@ export default function App() {
         onSelectChannel={(channel) => setActiveChannel(channel)}
         onFocusComposer={handleFocusComposer}
         postCount={posts.length}
+        dmCount={threads.length}
         memberCount={members.length || 1}
+        members={members}
+        selectedDmUserId={selectedDmUserId}
+        onOpenDm={handleOpenDm}
         currentMember={currentMember}
         onSignOut={handleSignOut}
         isOpen={isSidebarOpen}
@@ -390,14 +433,28 @@ export default function App() {
           {activeChannel === 'roster' ? (
             <RosterView
               members={members}
+              threads={threads}
               currentUserId={currentMember.uid}
+              googlePhotoUrl={user.photoURL}
+              onOpenDm={handleOpenDm}
+              onNotify={showToast}
+            />
+          ) : activeChannel === 'messages' ? (
+            <DirectMessagesView
+              currentMember={currentMember}
+              members={members}
+              threads={threads}
+              selectedUserId={selectedDmUserId}
+              onSelectUser={(uid) => setSelectedDmUserId(uid)}
               onNotify={showToast}
             />
           ) : (
             <TeamFeedView
               currentMember={currentMember}
+              members={members}
               composerRef={composerRef}
               onCopyText={handleCopyText}
+              onOpenDm={handleOpenDm}
               onNotify={showToast}
               posts={posts}
               isLoadingPosts={isLoadingPosts}

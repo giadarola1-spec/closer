@@ -43,16 +43,32 @@ service cloud.firestore {
       return isVerified() && exists(/databases/$(database)/documents/members/$(request.auth.uid));
     }
 
+    function isValidParticipantPair(pair) {
+      return pair is list
+        && pair.size() == 2
+        && isValidId(pair[0])
+        && isValidId(pair[1]);
+    }
+
     // --- Validation Blueprints ---
     function isValidMember(data) {
       return data.keys().hasAll(['uid', 'teamId', 'displayName', 'focus', 'statusText', 'createdAt', 'updatedAt'])
-        && data.keys().hasOnly(['uid', 'teamId', 'displayName', 'focus', 'statusText', 'dailyCalls', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'teamId', 'displayName', 'focus', 'statusText', 'dailyCalls', 'photoUrl', 'createdAt', 'updatedAt'])
         && isValidId(data.uid)
         && isValidTeamId(data.teamId)
         && data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 60
         && data.focus is string && data.focus.size() <= 80
         && data.statusText is string && data.statusText.size() <= 140
         && (!('dailyCalls' in data) || (data.dailyCalls is int && data.dailyCalls >= 0 && data.dailyCalls <= 10000))
+        && (!('photoUrl' in data) || (
+          data.photoUrl is string
+          && data.photoUrl.size() <= 32000
+          && (
+            data.photoUrl == ''
+            || data.photoUrl.matches('^https://.*')
+            || data.photoUrl.matches('^data:image/(jpeg|png|webp);base64,.*')
+          )
+        ))
         && data.createdAt is timestamp
         && data.updatedAt is timestamp;
     }
@@ -115,6 +131,44 @@ service cloud.firestore {
         && data.createdAt is timestamp;
     }
 
+    function isValidDirectThread(data) {
+      return data.keys().hasAll([
+          'teamId', 'participantIds', 'lastMessageText', 'lastSenderId',
+          'lastMessageId', 'lastMessageAt', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'teamId', 'participantIds', 'lastMessageText', 'lastSenderId',
+          'lastMessageId', 'lastMessageAt', 'createdAt', 'updatedAt'
+        ])
+        && isValidTeamId(data.teamId)
+        && isValidParticipantPair(data.participantIds)
+        && data.lastMessageText is string && data.lastMessageText.size() <= 500
+        && isValidId(data.lastSenderId)
+        && isValidId(data.lastMessageId)
+        && data.lastMessageAt is timestamp
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidDirectMessage(data) {
+      return data.keys().hasAll([
+          'dmId', 'teamId', 'participantIds', 'senderId',
+          'senderName', 'recipientId', 'body', 'createdAt'
+        ])
+        && data.keys().hasOnly([
+          'dmId', 'teamId', 'participantIds', 'senderId',
+          'senderName', 'recipientId', 'body', 'createdAt'
+        ])
+        && isValidId(data.dmId)
+        && isValidTeamId(data.teamId)
+        && isValidParticipantPair(data.participantIds)
+        && isValidId(data.senderId)
+        && data.senderName is string && data.senderName.size() >= 1 && data.senderName.size() <= 60
+        && isValidId(data.recipientId)
+        && data.body is string && data.body.size() >= 1 && data.body.size() <= 4000
+        && data.createdAt is timestamp;
+    }
+
     // --- Collection Rules ---
 
     // Admin registry (read self only; managed out-of-band)
@@ -168,7 +222,7 @@ service cloud.firestore {
         && isValidTeamId(incoming().teamId)
         && incoming().createdAt == existing().createdAt
         && incoming().updatedAt == request.time
-        && incoming().diff(existing()).affectedKeys().hasOnly(['teamId', 'displayName', 'focus', 'statusText', 'dailyCalls', 'updatedAt']);
+        && incoming().diff(existing()).affectedKeys().hasOnly(['teamId', 'displayName', 'focus', 'statusText', 'dailyCalls', 'photoUrl', 'updatedAt']);
       allow delete: if isAdmin() && isValidId(memberId);
     }
 
@@ -278,6 +332,80 @@ service cloud.firestore {
           && isTeamMember();
         allow update: if false;
         allow delete: if isVerified() && isValidId(postId) && isValidId(likeUserId) && (likeUserId == request.auth.uid || isAdmin());
+      }
+    }
+
+    // Private 1-on-1 direct message threads (strictly accessible only by participants)
+    match /dms/{dmId} {
+      allow get: if isVerified() && isValidId(dmId) && (
+        (resource == null && (
+          dmId.matches('^' + request.auth.uid + '__[a-zA-Z0-9_\\-]+$') ||
+          dmId.matches('^[a-zA-Z0-9_\\-]+__' + request.auth.uid + '$')
+        )) ||
+        (resource != null && request.auth.uid in existing().participantIds)
+      );
+      allow list: if isVerified()
+        && isValidTeamId(resource.data.teamId)
+        && request.auth.uid in resource.data.participantIds;
+      allow create: if isVerified()
+        && isValidId(dmId)
+        && isValidDirectThread(incoming())
+        && dmId == incoming().participantIds[0] + '__' + incoming().participantIds[1]
+        && request.auth.uid in incoming().participantIds
+        && incoming().lastSenderId == request.auth.uid
+        && incoming().lastMessageAt == request.time
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && isTeamMember()
+        && exists(/databases/$(database)/documents/members/$(incoming().participantIds[0]))
+        && exists(/databases/$(database)/documents/members/$(incoming().participantIds[1]))
+        && existsAfter(/databases/$(database)/documents/dms/$(dmId)/messages/$(incoming().lastMessageId));
+      allow update: if isVerified()
+        && isValidId(dmId)
+        && isValidDirectThread(incoming())
+        && request.auth.uid in existing().participantIds
+        && incoming().teamId == existing().teamId
+        && incoming().participantIds == existing().participantIds
+        && incoming().createdAt == existing().createdAt
+        && incoming().lastSenderId == request.auth.uid
+        && incoming().lastMessageAt == request.time
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly(['lastMessageText', 'lastSenderId', 'lastMessageId', 'lastMessageAt', 'updatedAt'])
+        && isTeamMember()
+        && existsAfter(/databases/$(database)/documents/dms/$(dmId)/messages/$(incoming().lastMessageId));
+      allow delete: if false;
+
+      // Private messages inside the thread
+      match /messages/{messageId} {
+        allow get: if isVerified()
+          && isValidId(dmId)
+          && isValidId(messageId)
+          && resource != null
+          && request.auth.uid in existing().participantIds;
+        allow list: if isVerified()
+          && isValidId(dmId)
+          && isValidTeamId(resource.data.teamId)
+          && request.auth.uid in resource.data.participantIds;
+        allow create: if isVerified()
+          && isValidId(dmId)
+          && isValidId(messageId)
+          && isValidDirectMessage(incoming())
+          && incoming().dmId == dmId
+          && dmId == incoming().participantIds[0] + '__' + incoming().participantIds[1]
+          && incoming().senderId == request.auth.uid
+          && request.auth.uid in incoming().participantIds
+          && incoming().recipientId in incoming().participantIds
+          && incoming().createdAt == request.time
+          && isTeamMember()
+          && exists(/databases/$(database)/documents/members/$(incoming().recipientId))
+          && existsAfter(/databases/$(database)/documents/dms/$(dmId))
+          && getAfter(/databases/$(database)/documents/dms/$(dmId)).data.participantIds == incoming().participantIds
+          && getAfter(/databases/$(database)/documents/dms/$(dmId)).data.lastMessageId == messageId;
+        allow update: if false;
+        allow delete: if isVerified()
+          && isValidId(dmId)
+          && isValidId(messageId)
+          && existing().senderId == request.auth.uid;
       }
     }
   }

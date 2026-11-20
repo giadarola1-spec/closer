@@ -21,6 +21,7 @@ import {
   Pin,
   Trash2,
   X,
+  Send,
 } from 'lucide-react';
 import { db, OperationType, handleFirestoreError } from '../firebase.ts';
 import {
@@ -31,11 +32,14 @@ import {
   TeamPost,
   PostComment,
 } from '../types/team.ts';
+import { Avatar } from './Avatar.tsx';
 
 interface TeamFeedViewProps {
   currentMember: TeamMember;
+  members: TeamMember[];
   composerRef: React.RefObject<HTMLTextAreaElement | null>;
   onCopyText: (text: string, label: string) => void;
+  onOpenDm: (targetUid: string) => void;
   onNotify: (msg: string) => void;
   posts: TeamPost[];
   isLoadingPosts: boolean;
@@ -54,14 +58,18 @@ function formatRelativeTime(ts: any): string {
 interface PostCardProps {
   post: TeamPost;
   currentMember: TeamMember;
+  membersById: Record<string, TeamMember>;
   onCopyText: (text: string, label: string) => void;
+  onOpenDm: (targetUid: string) => void;
   onNotify: (msg: string) => void;
 }
 
 const PostCard: React.FC<PostCardProps> = ({
   post,
   currentMember,
+  membersById,
   onCopyText,
+  onOpenDm,
   onNotify,
 }) => {
   const [hasLiked, setHasLiked] = useState(false);
@@ -73,6 +81,8 @@ const PostCard: React.FC<PostCardProps> = ({
 
   const isAuthor = post.authorId === currentMember.uid;
   const isArchived = post.stageStatus === 'archived';
+  const authorMember = membersById[post.authorId];
+  const displayAuthorName = authorMember?.displayName || post.authorName;
 
   useEffect(() => {
     const likePath = `posts/${post.id}/likes/${currentMember.uid}`;
@@ -213,21 +223,30 @@ const PostCard: React.FC<PostCardProps> = ({
     <article className="bg-[#191918] border border-[#262624] rounded-2xl p-4 sm:p-5 space-y-3">
       {/* Header Row */}
       <div className="flex items-center justify-between gap-2 text-xs">
-        <div className="flex items-center gap-2 min-w-0">
-          <span className="font-medium text-white truncate">{post.authorName}</span>
-          <span className="text-[#5c5b56]">·</span>
-          <span className="text-[#71706b] shrink-0">
-            {formatRelativeTime(post.createdAt)}
-          </span>
-          {post.pinned && (
-            <>
-              <span className="text-[#5c5b56]">·</span>
-              <span className="text-[#edece8] flex items-center gap-1 shrink-0">
-                <Pin className="w-3 h-3" />
-                Pinned
-              </span>
-            </>
-          )}
+        <div className="flex items-center gap-2.5 min-w-0">
+          <Avatar
+            name={displayAuthorName}
+            photoUrl={authorMember?.photoUrl}
+            size="sm"
+          />
+          <div className="flex items-center gap-2 min-w-0">
+            <span className="font-medium text-white truncate">
+              {displayAuthorName}
+            </span>
+            <span className="text-[#5c5b56]">·</span>
+            <span className="text-[#71706b] shrink-0">
+              {formatRelativeTime(post.createdAt)}
+            </span>
+            {post.pinned && (
+              <>
+                <span className="text-[#5c5b56]">·</span>
+                <span className="text-[#edece8] flex items-center gap-1 shrink-0">
+                  <Pin className="w-3 h-3" />
+                  Pinned
+                </span>
+              </>
+            )}
+          </div>
         </div>
 
         {isAuthor && (
@@ -315,6 +334,18 @@ const PostCard: React.FC<PostCardProps> = ({
           <Copy className="w-3.5 h-3.5" />
           <span>Copy</span>
         </button>
+
+        {authorMember && (
+          <button
+            type="button"
+            onClick={() => onOpenDm(post.authorId)}
+            className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-[#141413] border border-[#262624] text-[#9c9a92] hover:text-white hover:border-[#363632] transition-colors"
+            title={isAuthor ? 'Open private notes' : `Send private message to ${displayAuthorName}`}
+          >
+            <Send className="w-3.5 h-3.5" />
+            <span>{isAuthor ? 'Notes' : 'Message'}</span>
+          </button>
+        )}
       </div>
 
       {/* Expandable Comments Thread */}
@@ -322,21 +353,30 @@ const PostCard: React.FC<PostCardProps> = ({
         <div className="pt-2 space-y-3 border-t border-[#222220]">
           {comments.length > 0 && (
             <div className="space-y-2.5 pl-3 border-l border-[#2a2a27]">
-              {comments.map((comment) => (
-                <div key={comment.id} className="space-y-0.5 text-xs">
-                  <div className="flex items-center gap-2">
-                    <span className="font-medium text-[#edece8]">
-                      {comment.authorName}
-                    </span>
-                    <span className="text-[#5c5b56]">
-                      {formatRelativeTime(comment.createdAt)}
-                    </span>
+              {comments.map((comment) => {
+                const commentMember = membersById[comment.authorId];
+                const commentName = commentMember?.displayName || comment.authorName;
+                return (
+                  <div key={comment.id} className="space-y-1 text-xs">
+                    <div className="flex items-center gap-2">
+                      <Avatar
+                        name={commentName}
+                        photoUrl={commentMember?.photoUrl}
+                        size="xs"
+                      />
+                      <span className="font-medium text-[#edece8]">
+                        {commentName}
+                      </span>
+                      <span className="text-[#5c5b56]">
+                        {formatRelativeTime(comment.createdAt)}
+                      </span>
+                    </div>
+                    <p className="text-[#c9c8c2] leading-relaxed whitespace-pre-wrap pl-7">
+                      {comment.body}
+                    </p>
                   </div>
-                  <p className="text-[#c9c8c2] leading-relaxed whitespace-pre-wrap">
-                    {comment.body}
-                  </p>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
 
@@ -365,8 +405,10 @@ const PostCard: React.FC<PostCardProps> = ({
 
 export const TeamFeedView: React.FC<TeamFeedViewProps> = ({
   currentMember,
+  members,
   composerRef,
   onCopyText,
+  onOpenDm,
   onNotify,
   posts,
   isLoadingPosts,
@@ -375,6 +417,14 @@ export const TeamFeedView: React.FC<TeamFeedViewProps> = ({
   const [body, setBody] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
+
+  const membersById = useMemo(() => {
+    const map: Record<string, TeamMember> = {};
+    for (const m of members) {
+      map[m.uid] = m;
+    }
+    return map;
+  }, [members]);
 
   const handlePublish = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
@@ -426,10 +476,11 @@ export const TeamFeedView: React.FC<TeamFeedViewProps> = ({
     return posts
       .filter((p) => {
         if (!q) return true;
+        const liveAuthor = membersById[p.authorId]?.displayName || p.authorName;
         return (
           p.title.toLowerCase().includes(q) ||
           p.body.toLowerCase().includes(q) ||
-          p.authorName.toLowerCase().includes(q)
+          liveAuthor.toLowerCase().includes(q)
         );
       })
       .sort((a, b) => {
@@ -438,7 +489,7 @@ export const TeamFeedView: React.FC<TeamFeedViewProps> = ({
         const tb = b.createdAt?.toMillis?.() || Date.now();
         return tb - ta;
       });
-  }, [posts, searchQuery]);
+  }, [posts, searchQuery, membersById]);
 
   return (
     <div className="max-w-2xl mx-auto py-8 px-4 space-y-6 font-['Inter']">
@@ -494,9 +545,14 @@ export const TeamFeedView: React.FC<TeamFeedViewProps> = ({
         />
 
         <div className="flex items-center justify-between pt-2 border-t border-[#262624] px-1">
-          <span className="text-[11px] text-[#71706b]">
-            Posting as {currentMember.displayName} · Ctrl/Cmd+Enter
-          </span>
+          <div className="flex items-center gap-2 text-[11px] text-[#71706b]">
+            <Avatar
+              name={currentMember.displayName}
+              photoUrl={currentMember.photoUrl}
+              size="xs"
+            />
+            <span>Posting as {currentMember.displayName} · Ctrl/Cmd+Enter</span>
+          </div>
           <button
             type="submit"
             disabled={submitting || !body.trim()}
@@ -529,7 +585,9 @@ export const TeamFeedView: React.FC<TeamFeedViewProps> = ({
               key={post.id}
               post={post}
               currentMember={currentMember}
+              membersById={membersById}
               onCopyText={onCopyText}
+              onOpenDm={onOpenDm}
               onNotify={onNotify}
             />
           ))}

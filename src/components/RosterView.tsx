@@ -1,12 +1,17 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { doc, updateDoc, serverTimestamp } from 'firebase/firestore';
 import { db, OperationType, handleFirestoreError } from '../firebase.ts';
-import { TeamMember, LIMITS } from '../types/team.ts';
-import { Check, Edit3, Phone } from 'lucide-react';
+import { TeamMember, DirectThread, LIMITS, getOtherParticipantId } from '../types/team.ts';
+import { compressProfileImage, sanitizePhotoUrl } from '../utils/image.ts';
+import { Avatar } from './Avatar.tsx';
+import { Check, Edit3, Phone, Camera, Upload, Trash2, Send } from 'lucide-react';
 
 interface RosterViewProps {
   members: TeamMember[];
+  threads: DirectThread[];
   currentUserId: string;
+  googlePhotoUrl?: string | null;
+  onOpenDm: (targetUid: string) => void;
   onNotify: (msg: string) => void;
 }
 
@@ -26,13 +31,18 @@ function sanitizeCalls(value: number | string): number {
 
 export const RosterView: React.FC<RosterViewProps> = ({
   members,
+  threads,
   currentUserId,
+  googlePhotoUrl,
+  onOpenDm,
   onNotify,
 }) => {
   const currentMember = members.find((m) => m.uid === currentUserId) || null;
   const [isEditing, setIsEditing] = useState(false);
   const [displayName, setDisplayName] = useState(currentMember?.displayName || '');
   const [statusText, setStatusText] = useState(currentMember?.statusText || '');
+  const [photoUrlInput, setPhotoUrlInput] = useState(currentMember?.photoUrl || '');
+  const [photoError, setPhotoError] = useState<string | null>(null);
   const [dailyCallsInput, setDailyCallsInput] = useState(
     String(currentMember?.dailyCalls ?? 0)
   );
@@ -41,11 +51,16 @@ export const RosterView: React.FC<RosterViewProps> = ({
   );
   const [saving, setSaving] = useState(false);
   const [callsSaving, setCallsSaving] = useState(false);
+  const [photoSaving, setPhotoSaving] = useState(false);
+
+  const cardFileInputRef = useRef<HTMLInputElement | null>(null);
+  const editFileInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     if (currentMember) {
       setDisplayName(currentMember.displayName);
       setStatusText(currentMember.statusText);
+      setPhotoUrlInput(currentMember.photoUrl || '');
       const callsStr = String(currentMember.dailyCalls ?? 0);
       setDailyCallsInput(callsStr);
       setQuickCallsInput(callsStr);
@@ -57,8 +72,16 @@ export const RosterView: React.FC<RosterViewProps> = ({
     const cleanName = displayName.trim().slice(0, LIMITS.DISPLAY_NAME_MAX);
     const cleanStatus = statusText.trim().slice(0, LIMITS.STATUS_TEXT_MAX);
     const cleanCalls = sanitizeCalls(dailyCallsInput);
+    const cleanPhoto = sanitizePhotoUrl(photoUrlInput);
+
+    if (photoUrlInput.trim() && !cleanPhoto) {
+      setPhotoError('Photo URL must start with https:// or be an uploaded JPEG/PNG/WebP image.');
+      return;
+    }
+
     if (!cleanName || saving) return;
 
+    setPhotoError(null);
     setSaving(true);
     const path = `members/${currentUserId}`;
     try {
@@ -66,6 +89,7 @@ export const RosterView: React.FC<RosterViewProps> = ({
         displayName: cleanName,
         statusText: cleanStatus,
         dailyCalls: cleanCalls,
+        photoUrl: cleanPhoto,
         updatedAt: serverTimestamp(),
       });
       setIsEditing(false);
@@ -74,6 +98,49 @@ export const RosterView: React.FC<RosterViewProps> = ({
       handleFirestoreError(error, OperationType.UPDATE, path);
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleEditFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+
+    setPhotoError(null);
+    setPhotoSaving(true);
+    try {
+      const compressed = await compressProfileImage(file);
+      setPhotoUrlInput(compressed);
+    } catch (error) {
+      setPhotoError(error instanceof Error ? error.message : 'Failed to process image.');
+    } finally {
+      setPhotoSaving(false);
+    }
+  };
+
+  const handleQuickCardPhotoSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file || photoSaving) return;
+
+    setPhotoSaving(true);
+    const path = `members/${currentUserId}`;
+    try {
+      const compressed = await compressProfileImage(file);
+      await updateDoc(doc(db, 'members', currentUserId), {
+        photoUrl: compressed,
+        updatedAt: serverTimestamp(),
+      });
+      setPhotoUrlInput(compressed);
+      onNotify('Profile picture updated');
+    } catch (error) {
+      if (error instanceof Error && !error.message.startsWith('{')) {
+        onNotify(error.message);
+      } else {
+        handleFirestoreError(error, OperationType.UPDATE, path);
+      }
+    } finally {
+      setPhotoSaving(false);
     }
   };
 
@@ -114,6 +181,14 @@ export const RosterView: React.FC<RosterViewProps> = ({
 
   const savedCalls = currentMember?.dailyCalls ?? 0;
   const quickCallsDirty = sanitizeCalls(quickCallsInput) !== savedCalls;
+  const safeGooglePhoto = sanitizePhotoUrl(googlePhotoUrl);
+  const previewPhotoUrl = sanitizePhotoUrl(photoUrlInput);
+
+  const threadsByPeerId: Record<string, DirectThread> = {};
+  for (const thread of threads) {
+    const peerId = getOtherParticipantId(thread.participantIds, currentUserId);
+    threadsByPeerId[peerId] = thread;
+  }
 
   return (
     <div className="max-w-3xl mx-auto py-8 px-4 space-y-6 font-['Inter']">
@@ -132,7 +207,10 @@ export const RosterView: React.FC<RosterViewProps> = ({
         </div>
         {currentMember && !isEditing && (
           <button
-            onClick={() => setIsEditing(true)}
+            onClick={() => {
+              setPhotoError(null);
+              setIsEditing(true);
+            }}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#1e1e1c] hover:bg-[#282826] border border-[#2f2f2c] text-xs text-[#edece8] transition-colors"
           >
             <Edit3 className="w-3.5 h-3.5" />
@@ -144,9 +222,81 @@ export const RosterView: React.FC<RosterViewProps> = ({
       {isEditing && currentMember && (
         <form
           onSubmit={handleSaveProfile}
-          className="bg-[#1f1f1e] border border-[#2f2f2c] rounded-2xl p-4 space-y-3"
+          className="bg-[#1f1f1e] border border-[#2f2f2c] rounded-2xl p-4 space-y-4"
         >
           <div className="text-xs font-medium text-white">Your Closer Card</div>
+
+          {/* Profile Picture Editor */}
+          <div className="flex flex-col sm:flex-row sm:items-center gap-4 pb-3 border-b border-[#292926]">
+            <Avatar
+              name={displayName || currentMember.displayName}
+              photoUrl={previewPhotoUrl}
+              size="lg"
+            />
+            <div className="flex-1 space-y-2">
+              <div className="flex flex-wrap items-center gap-2">
+                <input
+                  ref={editFileInputRef}
+                  type="file"
+                  accept="image/png,image/jpeg,image/webp"
+                  onChange={handleEditFileSelect}
+                  className="hidden"
+                />
+                <button
+                  type="button"
+                  disabled={photoSaving}
+                  onClick={() => editFileInputRef.current?.click()}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#141413] hover:bg-[#282826] border border-[#2f2f2c] text-xs text-[#edece8] transition-colors"
+                >
+                  <Upload className="w-3.5 h-3.5" />
+                  <span>{photoSaving ? 'Processing...' : 'Upload photo'}</span>
+                </button>
+                {safeGooglePhoto && photoUrlInput !== safeGooglePhoto && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPhotoError(null);
+                      setPhotoUrlInput(safeGooglePhoto);
+                    }}
+                    className="px-3 py-1.5 rounded-lg bg-[#141413] hover:bg-[#282826] border border-[#2a2a27] text-xs text-[#9c9a92] hover:text-white transition-colors"
+                  >
+                    Use Google photo
+                  </button>
+                )}
+                {photoUrlInput && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPhotoError(null);
+                      setPhotoUrlInput('');
+                    }}
+                    className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-[#141413] hover:bg-[#282826] border border-[#2a2a27] text-xs text-[#8d8c85] hover:text-white transition-colors"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>Remove</span>
+                  </button>
+                )}
+              </div>
+              <input
+                type="url"
+                value={photoUrlInput.startsWith('data:') ? '' : photoUrlInput}
+                onChange={(e) => {
+                  setPhotoError(null);
+                  setPhotoUrlInput(e.target.value);
+                }}
+                placeholder={
+                  photoUrlInput.startsWith('data:')
+                    ? 'Uploaded custom photo ready to save'
+                    : 'Or paste an https:// image URL...'
+                }
+                className="w-full bg-[#141413] border border-[#2c2c29] rounded-lg px-3 py-1.5 text-xs text-white placeholder-[#5e5d58] outline-none focus:border-[#4d4d48]"
+              />
+              {photoError && (
+                <p className="text-[11px] text-[#d1d1cf]">{photoError}</p>
+              )}
+            </div>
+          </div>
+
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div className="space-y-1">
               <label className="text-[11px] text-[#8d8c85] block">Name</label>
@@ -173,6 +323,7 @@ export const RosterView: React.FC<RosterViewProps> = ({
               />
             </div>
           </div>
+
           <div className="space-y-2">
             <label className="text-[11px] text-[#8d8c85] block">Status</label>
             <input
@@ -203,17 +354,22 @@ export const RosterView: React.FC<RosterViewProps> = ({
               })}
             </div>
           </div>
+
           <div className="flex items-center justify-end gap-2 pt-1">
             <button
               type="button"
-              onClick={() => setIsEditing(false)}
+              onClick={() => {
+                setPhotoError(null);
+                setPhotoUrlInput(currentMember.photoUrl || '');
+                setIsEditing(false);
+              }}
               className="px-3 py-1.5 rounded-lg text-xs text-[#8d8c85] hover:text-white transition-colors"
             >
               Cancel
             </button>
             <button
               type="submit"
-              disabled={saving || !displayName.trim()}
+              disabled={saving || photoSaving || !displayName.trim()}
               className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-white hover:bg-[#e0dfd9] disabled:opacity-50 text-black text-xs font-medium transition-colors"
             >
               <Check className="w-3.5 h-3.5" />
@@ -222,6 +378,15 @@ export const RosterView: React.FC<RosterViewProps> = ({
           </div>
         </form>
       )}
+
+      {/* Hidden quick-upload input for self card avatar */}
+      <input
+        ref={cardFileInputRef}
+        type="file"
+        accept="image/png,image/jpeg,image/webp"
+        onChange={handleQuickCardPhotoSelect}
+        className="hidden"
+      />
 
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
         {sortedMembers.map((member) => {
@@ -233,58 +398,115 @@ export const RosterView: React.FC<RosterViewProps> = ({
               key={member.uid}
               className="bg-[#191918] border border-[#262624] rounded-xl p-4 flex flex-col justify-between space-y-3"
             >
-              <div className="space-y-1.5">
+              <div className="flex items-start gap-3">
+                {isMe ? (
+                  <button
+                    type="button"
+                    disabled={photoSaving}
+                    onClick={() => cardFileInputRef.current?.click()}
+                    className="relative group shrink-0 rounded-full focus:outline-none"
+                    title="Change profile picture"
+                  >
+                    <Avatar
+                      name={member.displayName}
+                      photoUrl={member.photoUrl}
+                      size="md"
+                    />
+                    <span className="absolute inset-0 rounded-full bg-black/60 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity">
+                      <Camera className="w-3.5 h-3.5 text-white" />
+                    </span>
+                  </button>
+                ) : (
+                  <Avatar
+                    name={member.displayName}
+                    photoUrl={member.photoUrl}
+                    size="md"
+                  />
+                )}
+
+                <div className="min-w-0 flex-1 space-y-1">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-sm font-medium text-white truncate">
+                      {member.displayName}
+                    </span>
+                    {isMe && (
+                      <span className="text-[11px] text-[#9c9a92] shrink-0">
+                        You
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-xs text-[#9c9a92] leading-relaxed min-h-[32px]">
+                    {member.statusText || 'On the phones'}
+                  </p>
+                </div>
+              </div>
+
+              {/* Daily Calls Counter (direct numeric input, no +/- buttons) & Private Message */}
+              <div className="pt-2.5 border-t border-[#222220] space-y-2.5">
                 <div className="flex items-center justify-between gap-2">
-                  <span className="text-sm font-medium text-white truncate">
-                    {member.displayName}
-                  </span>
-                  {isMe && (
-                    <span className="text-[11px] text-[#9c9a92] shrink-0">
-                      You
+                  <div className="flex items-center gap-1.5 text-[11px] text-[#8d8c85]">
+                    <Phone className="w-3 h-3 text-[#71706b]" />
+                    <span>Calls / day</span>
+                  </div>
+
+                  {isMe ? (
+                    <form
+                      onSubmit={handleQuickCallsSubmit}
+                      className="flex items-center gap-1.5"
+                    >
+                      <input
+                        type="number"
+                        min={0}
+                        max={LIMITS.DAILY_CALLS_MAX}
+                        value={quickCallsInput}
+                        onChange={(e) => setQuickCallsInput(e.target.value)}
+                        aria-label="Your calls per day"
+                        className="w-16 bg-[#141413] border border-[#2a2a27] rounded-md px-2 py-0.5 text-right text-xs text-white font-medium tabular-nums outline-none focus:border-[#4d4d48]"
+                      />
+                      {quickCallsDirty && (
+                        <button
+                          type="submit"
+                          disabled={callsSaving}
+                          className="px-2 py-0.5 rounded-md bg-white hover:bg-[#e0dfd9] disabled:opacity-50 text-black text-[11px] font-medium transition-colors"
+                        >
+                          Save
+                        </button>
+                      )}
+                    </form>
+                  ) : (
+                    <span className="text-sm font-medium text-[#edece8] tabular-nums">
+                      {callsCount}
                     </span>
                   )}
                 </div>
-                <p className="text-xs text-[#9c9a92] leading-relaxed min-h-[32px]">
-                  {member.statusText || 'On the phones'}
-                </p>
-              </div>
 
-              {/* Daily Calls Counter (direct numeric input, no +/- buttons) */}
-              <div className="pt-2.5 border-t border-[#222220] flex items-center justify-between gap-2">
-                <div className="flex items-center gap-1.5 text-[11px] text-[#8d8c85]">
-                  <Phone className="w-3 h-3 text-[#71706b]" />
-                  <span>Calls / day</span>
-                </div>
-
-                {isMe ? (
-                  <form
-                    onSubmit={handleQuickCallsSubmit}
-                    className="flex items-center gap-1.5"
-                  >
-                    <input
-                      type="number"
-                      min={0}
-                      max={LIMITS.DAILY_CALLS_MAX}
-                      value={quickCallsInput}
-                      onChange={(e) => setQuickCallsInput(e.target.value)}
-                      aria-label="Your calls per day"
-                      className="w-16 bg-[#141413] border border-[#2a2a27] rounded-md px-2 py-0.5 text-right text-xs text-white font-medium tabular-nums outline-none focus:border-[#4d4d48]"
-                    />
-                    {quickCallsDirty && (
-                      <button
-                        type="submit"
-                        disabled={callsSaving}
-                        className="px-2 py-0.5 rounded-md bg-white hover:bg-[#e0dfd9] disabled:opacity-50 text-black text-[11px] font-medium transition-colors"
-                      >
-                        Save
-                      </button>
-                    )}
-                  </form>
-                ) : (
-                  <span className="text-sm font-medium text-[#edece8] tabular-nums">
-                    {callsCount}
-                  </span>
-                )}
+                {(() => {
+                  const thread = threadsByPeerId[member.uid];
+                  return (
+                    <button
+                      type="button"
+                      onClick={() => onOpenDm(member.uid)}
+                      className="w-full flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg bg-[#141413] hover:bg-[#222220] border border-[#262624] hover:border-[#363632] text-xs text-[#c9c8c2] hover:text-white transition-colors"
+                    >
+                      <span className="flex items-center gap-1.5 min-w-0">
+                        <Send className="w-3 h-3 text-[#8d8c85] shrink-0" />
+                        <span className="truncate">
+                          {isMe
+                            ? 'Private notes'
+                            : thread
+                              ? 'Open private chat'
+                              : `Message ${member.displayName}`}
+                        </span>
+                      </span>
+                      {thread && (
+                        <span className="text-[10px] text-[#71706b] truncate max-w-[90px]">
+                          {thread.lastSenderId === currentUserId ? 'You: ' : ''}
+                          {thread.lastMessageText}
+                        </span>
+                      )}
+                    </button>
+                  );
+                })()}
               </div>
             </div>
           );

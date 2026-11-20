@@ -32,6 +32,12 @@
           "type": "integer",
           "description": "Number of calls this closer is getting per day (0-10000)."
         },
+        "photoUrl": {
+          "type": "string",
+          "maxLength": 32000,
+          "pattern": "^(|https://.*|data:image/(jpeg|png|webp);base64,.*)$",
+          "description": "Optional profile picture (https URL or compressed JPEG/PNG/WebP data URI)."
+        },
         "createdAt": {
           "type": "string",
           "format": "date-time"
@@ -224,6 +230,116 @@
         }
       },
       "required": ["teamId", "postId", "userId", "createdAt"]
+    },
+    "DirectThread": {
+      "title": "DirectThread",
+      "description": "Private 1-on-1 direct message thread metadata between two closers.",
+      "type": "object",
+      "properties": {
+        "teamId": {
+          "type": "string",
+          "enum": ["gtt-closers", "gtt-closers-9"]
+        },
+        "participantIds": {
+          "type": "array",
+          "description": "Sorted pair of 2 closer UIDs participating in this private thread."
+        },
+        "lastMessageText": {
+          "type": "string",
+          "maxLength": 500
+        },
+        "lastSenderId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "lastMessageId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "lastMessageAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "teamId",
+        "participantIds",
+        "lastMessageText",
+        "lastSenderId",
+        "lastMessageId",
+        "lastMessageAt",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "DirectMessage": {
+      "title": "DirectMessage",
+      "description": "Private 1-on-1 message between two closers inside a DirectThread.",
+      "type": "object",
+      "properties": {
+        "dmId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "teamId": {
+          "type": "string",
+          "enum": ["gtt-closers", "gtt-closers-9"]
+        },
+        "participantIds": {
+          "type": "array",
+          "description": "Sorted pair of 2 closer UIDs authorized to read this private message."
+        },
+        "senderId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "senderName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 60
+        },
+        "recipientId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "body": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4000
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "dmId",
+        "teamId",
+        "participantIds",
+        "senderId",
+        "senderName",
+        "recipientId",
+        "body",
+        "createdAt"
+      ]
     }
   },
   "firestore": {
@@ -237,7 +353,7 @@
     },
     "/posts/{postId}": {
       "schema": { "$ref": "#/entities/TeamPost" },
-      "description": "Shared team feed of messages, ideas, MQLs, SQLs, and openings."
+      "description": "Shared team feed of posts."
     },
     "/posts/{postId}/comments/{commentId}": {
       "schema": { "$ref": "#/entities/PostComment" },
@@ -246,6 +362,14 @@
     "/posts/{postId}/likes/{likeUserId}": {
       "schema": { "$ref": "#/entities/PostLike" },
       "description": "Per-user post likes synchronized atomically with post likeCount."
+    },
+    "/dms/{dmId}": {
+      "schema": { "$ref": "#/entities/DirectThread" },
+      "description": "Private 1-on-1 DM threads visible only to the two participants."
+    },
+    "/dms/{dmId}/messages/{messageId}": {
+      "schema": { "$ref": "#/entities/DirectMessage" },
+      "description": "Private 1-on-1 messages inside a DM thread."
     }
   }
 }
