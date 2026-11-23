@@ -904,83 +904,74 @@ export const TeamFeedView: React.FC<TeamFeedViewProps> = ({
   const hasDraft = Boolean(title.trim() || body.trim() || selectedImageFile);
 
   return (
-    <div className="max-w-[680px] mx-auto py-6 sm:py-8 px-4 space-y-5 font-['Inter']">
-      {/* Header + Search + Alerts + New Post */}
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
-        <div className="flex items-baseline gap-2.5">
-          <h1 className="font-['Inter'] text-2xl sm:text-3xl font-medium tracking-tight text-[#edece8] lowercase">
-            closer
-          </h1>
-          <span className="text-xs text-[#71706b]">Team feed</span>
+    <div className="w-full max-w-[680px] py-6 sm:py-8 px-4 sm:px-6 space-y-5 font-['Inter']">
+      {/* Full-Width Search + Alerts + New Post */}
+      <div className="flex flex-wrap sm:flex-nowrap items-center gap-2 w-full">
+        <div className="relative flex-1 min-w-[200px]">
+          <Search className="w-3.5 h-3.5 text-[#71706b] absolute left-3 top-1/2 -translate-y-1/2" />
+          <input
+            type="text"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder="Search posts..."
+            className="w-full bg-[#191918] border border-[#262624] rounded-xl pl-8 pr-7 py-2 text-xs text-white placeholder-[#71706b] outline-none focus:border-[#42423e] transition-colors"
+          />
+          {searchQuery && (
+            <button
+              type="button"
+              onClick={() => setSearchQuery('')}
+              className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[#71706b] hover:text-white"
+              title="Clear search"
+            >
+              <X className="w-3 h-3" />
+            </button>
+          )}
         </div>
 
-        <div className="flex flex-wrap sm:flex-nowrap items-center gap-2 flex-1 md:max-w-[440px] justify-end">
-          <div className="relative flex-1 min-w-[160px]">
-            <Search className="w-3.5 h-3.5 text-[#71706b] absolute left-3 top-1/2 -translate-y-1/2" />
-            <input
-              type="text"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Search posts..."
-              className="w-full bg-[#191918] border border-[#262624] rounded-xl pl-8 pr-7 py-1.5 text-xs text-white placeholder-[#71706b] outline-none focus:border-[#42423e] transition-colors"
-            />
-            {searchQuery && (
-              <button
-                type="button"
-                onClick={() => setSearchQuery('')}
-                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[#71706b] hover:text-white"
-                title="Clear search"
-              >
-                <X className="w-3 h-3" />
-              </button>
-            )}
-          </div>
+        <button
+          type="button"
+          onClick={onOpenNotificationSettings}
+          className={`flex items-center gap-1.5 px-3 py-2 rounded-xl border text-xs transition-colors shrink-0 whitespace-nowrap ${
+            notificationsEnabled
+              ? 'bg-[#191918] border-[#262624] text-[#edece8] hover:border-[#3d3d39]'
+              : 'bg-[#141413] border-[#262624] text-[#71706b] hover:text-white hover:border-[#363632]'
+          }`}
+          title="Edit post notification & sound settings"
+        >
+          {notificationsEnabled ? (
+            <Bell className="w-3.5 h-3.5" />
+          ) : (
+            <BellOff className="w-3.5 h-3.5" />
+          )}
+          <span className="hidden sm:inline">
+            {notificationsEnabled ? 'Alerts' : 'Muted'}
+          </span>
+        </button>
 
-          <button
-            type="button"
-            onClick={onOpenNotificationSettings}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl border text-xs transition-colors shrink-0 whitespace-nowrap ${
-              notificationsEnabled
-                ? 'bg-[#191918] border-[#262624] text-[#edece8] hover:border-[#3d3d39]'
-                : 'bg-[#141413] border-[#262624] text-[#71706b] hover:text-white hover:border-[#363632]'
-            }`}
-            title="Edit post notification & sound settings"
-          >
-            {notificationsEnabled ? (
-              <Bell className="w-3.5 h-3.5" />
-            ) : (
-              <BellOff className="w-3.5 h-3.5" />
-            )}
-            <span className="hidden sm:inline">
-              {notificationsEnabled ? 'Alerts' : 'Muted'}
-            </span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => {
-              if (isComposerOpen) {
-                setIsComposerOpen(false);
-              } else {
-                handleOpenComposer();
-              }
-            }}
-            aria-expanded={isComposerOpen}
-            className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-medium transition-colors shrink-0 whitespace-nowrap ${
-              isComposerOpen
-                ? 'bg-[#262624] border border-[#3d3d39] text-white hover:bg-[#2f2f2c]'
-                : 'bg-white hover:bg-[#e0dfd9] text-black border border-transparent'
-            }`}
-            title={isComposerOpen ? 'Close post composer' : 'Write a new post'}
-          >
-            {isComposerOpen ? (
-              <X className="w-3.5 h-3.5" />
-            ) : (
-              <Plus className="w-3.5 h-3.5" />
-            )}
-            <span>{isComposerOpen ? 'Close' : hasDraft ? 'Resume draft' : 'New post'}</span>
-          </button>
-        </div>
+        <button
+          type="button"
+          onClick={() => {
+            if (isComposerOpen) {
+              setIsComposerOpen(false);
+            } else {
+              handleOpenComposer();
+            }
+          }}
+          aria-expanded={isComposerOpen}
+          className={`inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-medium transition-colors shrink-0 whitespace-nowrap ${
+            isComposerOpen
+              ? 'bg-[#262624] border border-[#3d3d39] text-white hover:bg-[#2f2f2c]'
+              : 'bg-white hover:bg-[#e0dfd9] text-black border border-transparent'
+          }`}
+          title={isComposerOpen ? 'Close post composer' : 'Write a new post'}
+        >
+          {isComposerOpen ? (
+            <X className="w-3.5 h-3.5" />
+          ) : (
+            <Plus className="w-3.5 h-3.5" />
+          )}
+          <span>{isComposerOpen ? 'Close' : hasDraft ? 'Resume draft' : 'New post'}</span>
+        </button>
       </div>
 
       {/* Main Feed Workspace */}
