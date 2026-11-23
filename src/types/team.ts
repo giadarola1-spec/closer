@@ -105,3 +105,22 @@ export function getOtherParticipantId(
   return other || currentUserId;
 }
 
+export type NotificationTone = 'chime' | 'ping' | 'soft';
+
+export interface NotificationPreferences {
+  postNotificationsEnabled: boolean;
+  postSoundEnabled: boolean;
+  postSoundTone: NotificationTone;
+  postBrowserAlertsEnabled: boolean;
+}
+
+export interface PostAlert {
+  id: string;
+  postId: string;
+  authorName: string;
+  authorPhotoUrl?: string;
+  title: string;
+  body: string;
+}
+
+

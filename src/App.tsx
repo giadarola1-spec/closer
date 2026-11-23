@@ -11,7 +11,7 @@ import {
   onSnapshot,
   serverTimestamp,
 } from 'firebase/firestore';
-import { Menu } from 'lucide-react';
+import { Menu, Bell, BellOff } from 'lucide-react';
 import {
   auth,
   db,
@@ -27,13 +27,26 @@ import {
   TeamMember,
   TeamPost,
   DirectThread,
+  NotificationPreferences,
+  PostAlert,
 } from './types/team.ts';
 import { Sidebar } from './components/Sidebar.tsx';
 import { TeamFeedView } from './components/TeamFeedView.tsx';
 import { RosterView } from './components/RosterView.tsx';
 import { DirectMessagesView } from './components/DirectMessagesView.tsx';
+import { NotificationSettingsModal } from './components/NotificationSettingsModal.tsx';
+import { PostNotificationBanner } from './components/PostNotificationBanner.tsx';
 import { Toast } from './components/Toast.tsx';
 import { sanitizePhotoUrl } from './utils/image.ts';
+import {
+  DEFAULT_NOTIFICATION_PREFS,
+  isValidTone,
+  loadCachedNotificationPrefs,
+  saveCachedNotificationPrefs,
+  installAudioUnlockListeners,
+  playNotificationSound,
+  showBrowserPostNotification,
+} from './utils/notifications.ts';
 
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
@@ -54,8 +67,47 @@ export default function App() {
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
+  const [notificationPrefs, setNotificationPrefs] = useState<NotificationPreferences>(
+    DEFAULT_NOTIFICATION_PREFS
+  );
+  const [savingNotificationPrefs, setSavingNotificationPrefs] = useState(false);
+  const [isNotificationModalOpen, setIsNotificationModalOpen] = useState(false);
+  const [postAlerts, setPostAlerts] = useState<PostAlert[]>([]);
+
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
   const toastTimerRef = useRef<number | null>(null);
+  const alertTimersRef = useRef<Record<string, number>>({});
+  const knownPostIdsRef = useRef<Set<string>>(new Set());
+  const initialPostsLoadedRef = useRef(false);
+  const prefsRef = useRef<NotificationPreferences>(notificationPrefs);
+  const membersRef = useRef<TeamMember[]>(members);
+
+  useEffect(() => {
+    prefsRef.current = notificationPrefs;
+  }, [notificationPrefs]);
+
+  useEffect(() => {
+    membersRef.current = members;
+  }, [members]);
+
+  useEffect(() => {
+    return installAudioUnlockListeners();
+  }, []);
+
+  const dismissPostAlert = (alertId: string) => {
+    if (alertTimersRef.current[alertId]) {
+      window.clearTimeout(alertTimersRef.current[alertId]);
+      delete alertTimersRef.current[alertId];
+    }
+    setPostAlerts((prev) => prev.filter((a) => a.id !== alertId));
+  };
+
+  const pushPostAlert = (alert: PostAlert) => {
+    setPostAlerts((prev) => [alert, ...prev].slice(0, 3));
+    alertTimersRef.current[alert.id] = window.setTimeout(() => {
+      dismissPostAlert(alert.id);
+    }, 6000);
+  };
 
   const showToast = (msg: string) => {
     setToastMessage(msg);
@@ -72,6 +124,9 @@ export default function App() {
       if (toastTimerRef.current) {
         window.clearTimeout(toastTimerRef.current);
       }
+      Object.values(alertTimersRef.current).forEach((timerId) => {
+        window.clearTimeout(timerId);
+      });
     };
   }, []);
 
@@ -86,8 +141,14 @@ export default function App() {
         setMembers([]);
         setPosts([]);
         setThreads([]);
+        setPostAlerts([]);
         setSelectedDmUserId(null);
+        setNotificationPrefs(DEFAULT_NOTIFICATION_PREFS);
+        knownPostIdsRef.current.clear();
+        initialPostsLoadedRef.current = false;
         setIsLoadingPosts(false);
+      } else {
+        setNotificationPrefs(loadCachedNotificationPrefs(nextUser.uid));
       }
     });
     return () => unsub();
@@ -108,15 +169,43 @@ export default function App() {
 
     const bootstrap = async () => {
       const userRef = doc(db, 'users', user.uid);
+      const cachedPrefs = loadCachedNotificationPrefs(user.uid);
       try {
         const userSnap = await getDoc(userRef);
         if (!userSnap.exists()) {
           await setDoc(userRef, {
             uid: user.uid,
             email: (user.email || '').slice(0, 200),
+            postNotificationsEnabled: cachedPrefs.postNotificationsEnabled,
+            postSoundEnabled: cachedPrefs.postSoundEnabled,
+            postSoundTone: cachedPrefs.postSoundTone,
+            postBrowserAlertsEnabled: cachedPrefs.postBrowserAlertsEnabled,
             createdAt: serverTimestamp(),
             updatedAt: serverTimestamp(),
           });
+        } else {
+          const userData = userSnap.data();
+          const syncedPrefs: NotificationPreferences = {
+            postNotificationsEnabled:
+              typeof userData.postNotificationsEnabled === 'boolean'
+                ? userData.postNotificationsEnabled
+                : cachedPrefs.postNotificationsEnabled,
+            postSoundEnabled:
+              typeof userData.postSoundEnabled === 'boolean'
+                ? userData.postSoundEnabled
+                : cachedPrefs.postSoundEnabled,
+            postSoundTone: isValidTone(userData.postSoundTone)
+              ? userData.postSoundTone
+              : cachedPrefs.postSoundTone,
+            postBrowserAlertsEnabled:
+              typeof userData.postBrowserAlertsEnabled === 'boolean'
+                ? userData.postBrowserAlertsEnabled
+                : cachedPrefs.postBrowserAlertsEnabled,
+          };
+          if (!cancelled) {
+            setNotificationPrefs(syncedPrefs);
+            saveCachedNotificationPrefs(user.uid, syncedPrefs);
+          }
         }
       } catch (error) {
         if (!cancelled) {
@@ -233,6 +322,9 @@ export default function App() {
       }
     );
 
+    initialPostsLoadedRef.current = false;
+    knownPostIdsRef.current.clear();
+
     const postsQuery = query(
       collection(db, 'posts'),
       where('teamId', 'in', [...ACCEPTED_TEAM_IDS])
@@ -241,6 +333,51 @@ export default function App() {
       postsQuery,
       (snap) => {
         const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }) as TeamPost);
+
+        if (!initialPostsLoadedRef.current) {
+          for (const d of snap.docs) {
+            knownPostIdsRef.current.add(d.id);
+          }
+          initialPostsLoadedRef.current = true;
+        } else {
+          for (const change of snap.docChanges()) {
+            if (change.type === 'added' && !knownPostIdsRef.current.has(change.doc.id)) {
+              knownPostIdsRef.current.add(change.doc.id);
+              const newPost = { id: change.doc.id, ...change.doc.data() } as TeamPost;
+              const activePrefs = prefsRef.current;
+
+              if (newPost.authorId !== user.uid && activePrefs.postNotificationsEnabled) {
+                const authorProfile = membersRef.current.find(
+                  (m) => m.uid === newPost.authorId
+                );
+                const authorName = authorProfile?.displayName || newPost.authorName;
+
+                pushPostAlert({
+                  id: `${newPost.id}_${Date.now()}`,
+                  postId: newPost.id,
+                  authorName,
+                  authorPhotoUrl: authorProfile?.photoUrl,
+                  title: newPost.title,
+                  body: newPost.body,
+                });
+
+                if (activePrefs.postSoundEnabled) {
+                  playNotificationSound(activePrefs.postSoundTone);
+                }
+
+                if (activePrefs.postBrowserAlertsEnabled) {
+                  const notifTitle = newPost.title
+                    ? `${authorName}: ${newPost.title}`
+                    : `${authorName} posted in closer`;
+                  showBrowserPostNotification(notifTitle, newPost.body, () => {
+                    setActiveChannel('feed');
+                  });
+                }
+              }
+            }
+          }
+        }
+
         setPosts(list);
         setIsLoadingPosts(false);
       },
@@ -304,6 +441,55 @@ export default function App() {
   const handleOpenDm = (targetUid: string) => {
     setSelectedDmUserId(targetUid);
     setActiveChannel('messages');
+  };
+
+  const handleUpdateNotificationPrefs = async (
+    patch: Partial<NotificationPreferences>
+  ) => {
+    if (!user) return;
+    const nextPrefs: NotificationPreferences = {
+      ...notificationPrefs,
+      ...patch,
+    };
+    setNotificationPrefs(nextPrefs);
+    saveCachedNotificationPrefs(user.uid, nextPrefs);
+    setSavingNotificationPrefs(true);
+    try {
+      await updateDoc(doc(db, 'users', user.uid), {
+        ...patch,
+        updatedAt: serverTimestamp(),
+      });
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, `users/${user.uid}`);
+    } finally {
+      setSavingNotificationPrefs(false);
+    }
+  };
+
+  const handleTestAlert = () => {
+    if (!currentMember) return;
+    pushPostAlert({
+      id: `test_${Date.now()}`,
+      postId: 'test',
+      authorName: currentMember.displayName,
+      authorPhotoUrl: currentMember.photoUrl,
+      title: 'Test post notification',
+      body: notificationPrefs.postNotificationsEnabled
+        ? notificationPrefs.postSoundEnabled
+          ? `Alerts on · Sound tone: ${notificationPrefs.postSoundTone}`
+          : 'Alerts on · Sound muted'
+        : 'Post alerts are currently off (this is a manual preview)',
+    });
+    if (notificationPrefs.postSoundEnabled) {
+      playNotificationSound(notificationPrefs.postSoundTone);
+    }
+    if (notificationPrefs.postBrowserAlertsEnabled) {
+      showBrowserPostNotification(
+        `${currentMember.displayName}: Test post notification`,
+        'New post notifications are active.',
+        () => setActiveChannel('feed')
+      );
+    }
   };
 
   const handleFocusComposer = () => {
@@ -410,6 +596,8 @@ export default function App() {
         members={members}
         selectedDmUserId={selectedDmUserId}
         onOpenDm={handleOpenDm}
+        notificationsEnabled={notificationPrefs.postNotificationsEnabled}
+        onOpenNotificationSettings={() => setIsNotificationModalOpen(true)}
         currentMember={currentMember}
         onSignOut={handleSignOut}
         isOpen={isSidebarOpen}
@@ -426,7 +614,17 @@ export default function App() {
             <Menu className="w-4 h-4" />
           </button>
           <span className="font-['Inter'] text-sm font-medium text-white lowercase">closer</span>
-          <div className="w-6" />
+          <button
+            onClick={() => setIsNotificationModalOpen(true)}
+            className="p-1.5 text-[#8d8c85] hover:text-white rounded bg-[#1e1e1c]"
+            title="Post notifications"
+          >
+            {notificationPrefs.postNotificationsEnabled ? (
+              <Bell className="w-4 h-4" />
+            ) : (
+              <BellOff className="w-4 h-4" />
+            )}
+          </button>
         </div>
 
         <main className="flex-1 h-full overflow-y-auto">
@@ -456,12 +654,29 @@ export default function App() {
               onCopyText={handleCopyText}
               onOpenDm={handleOpenDm}
               onNotify={showToast}
+              notificationsEnabled={notificationPrefs.postNotificationsEnabled}
+              onOpenNotificationSettings={() => setIsNotificationModalOpen(true)}
               posts={posts}
               isLoadingPosts={isLoadingPosts}
             />
           )}
         </main>
       </div>
+
+      <PostNotificationBanner
+        alerts={postAlerts}
+        onOpenFeed={() => setActiveChannel('feed')}
+        onDismiss={dismissPostAlert}
+      />
+
+      <NotificationSettingsModal
+        isOpen={isNotificationModalOpen}
+        prefs={notificationPrefs}
+        saving={savingNotificationPrefs}
+        onUpdatePrefs={handleUpdateNotificationPrefs}
+        onTestAlert={handleTestAlert}
+        onClose={() => setIsNotificationModalOpen(false)}
+      />
 
       <Toast message={toastMessage} />
     </div>

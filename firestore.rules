@@ -75,9 +75,16 @@ service cloud.firestore {
 
     function isValidPrivateUser(data) {
       return data.keys().hasAll(['uid', 'email', 'createdAt', 'updatedAt'])
-        && data.keys().hasOnly(['uid', 'email', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly([
+          'uid', 'email', 'postNotificationsEnabled', 'postSoundEnabled',
+          'postSoundTone', 'postBrowserAlertsEnabled', 'createdAt', 'updatedAt'
+        ])
         && isValidId(data.uid)
         && data.email is string && data.email.size() <= 200
+        && (!('postNotificationsEnabled' in data) || data.postNotificationsEnabled is bool)
+        && (!('postSoundEnabled' in data) || data.postSoundEnabled is bool)
+        && (!('postSoundTone' in data) || data.postSoundTone in ['chime', 'ping', 'soft'])
+        && (!('postBrowserAlertsEnabled' in data) || data.postBrowserAlertsEnabled is bool)
         && data.createdAt is timestamp
         && data.updatedAt is timestamp;
     }
@@ -177,7 +184,7 @@ service cloud.firestore {
       allow list, create, update, delete: if false;
     }
 
-    // Private PII user info (strict owner or admin only)
+    // Private PII & personal notification settings (strict owner or admin only)
     match /users/{userId} {
       allow get: if isVerified() && isValidId(userId) && (request.auth.uid == userId || isAdmin());
       allow list: if false;
@@ -195,7 +202,14 @@ service cloud.firestore {
         && incoming().uid == existing().uid
         && incoming().createdAt == existing().createdAt
         && incoming().updatedAt == request.time
-        && incoming().diff(existing()).affectedKeys().hasOnly(['email', 'updatedAt']);
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'email',
+          'postNotificationsEnabled',
+          'postSoundEnabled',
+          'postSoundTone',
+          'postBrowserAlertsEnabled',
+          'updatedAt'
+        ]);
       allow delete: if isAdmin() && isValidId(userId);
     }
 

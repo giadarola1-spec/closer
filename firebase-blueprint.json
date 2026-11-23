@@ -51,7 +51,7 @@
     },
     "PrivateUser": {
       "title": "PrivateUser",
-      "description": "Private PII record strictly accessible by the owning closer or admin.",
+      "description": "Private PII and personal notification preferences strictly accessible by the owning closer or admin.",
       "type": "object",
       "properties": {
         "uid": {
@@ -63,6 +63,23 @@
         "email": {
           "type": "string",
           "maxLength": 200
+        },
+        "postNotificationsEnabled": {
+          "type": "boolean",
+          "description": "Whether to alert this closer when a new post is published."
+        },
+        "postSoundEnabled": {
+          "type": "boolean",
+          "description": "Whether to play a sound on new post alerts."
+        },
+        "postSoundTone": {
+          "type": "string",
+          "enum": ["chime", "ping", "soft"],
+          "description": "Synthesized sound profile for new post alerts."
+        },
+        "postBrowserAlertsEnabled": {
+          "type": "boolean",
+          "description": "Whether to dispatch browser Notifications API alerts when permitted."
         },
         "createdAt": {
           "type": "string",

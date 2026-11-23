@@ -22,6 +22,8 @@ import {
   Trash2,
   X,
   Send,
+  Bell,
+  BellOff,
 } from 'lucide-react';
 import { db, OperationType, handleFirestoreError } from '../firebase.ts';
 import {
@@ -41,6 +43,8 @@ interface TeamFeedViewProps {
   onCopyText: (text: string, label: string) => void;
   onOpenDm: (targetUid: string) => void;
   onNotify: (msg: string) => void;
+  notificationsEnabled: boolean;
+  onOpenNotificationSettings: () => void;
   posts: TeamPost[];
   isLoadingPosts: boolean;
 }
@@ -410,6 +414,8 @@ export const TeamFeedView: React.FC<TeamFeedViewProps> = ({
   onCopyText,
   onOpenDm,
   onNotify,
+  notificationsEnabled,
+  onOpenNotificationSettings,
   posts,
   isLoadingPosts,
 }) => {
@@ -493,29 +499,51 @@ export const TeamFeedView: React.FC<TeamFeedViewProps> = ({
 
   return (
     <div className="max-w-2xl mx-auto py-8 px-4 space-y-6 font-['Inter']">
-      {/* Header + Search Bar */}
+      {/* Header + Search + Notification Settings */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <h1 className="font-['Inter'] text-2xl sm:text-3xl font-medium tracking-tight text-[#edece8] lowercase">
           closer
         </h1>
 
-        <div className="relative flex-1 sm:max-w-xs">
-          <Search className="w-3.5 h-3.5 text-[#71706b] absolute left-3 top-1/2 -translate-y-1/2" />
-          <input
-            type="text"
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Search posts..."
-            className="w-full bg-[#191918] border border-[#2a2a27] rounded-xl pl-8 pr-7 py-1.5 text-xs text-white placeholder-[#71706b] outline-none focus:border-[#4d4d48]"
-          />
-          {searchQuery && (
-            <button
-              onClick={() => setSearchQuery('')}
-              className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[#71706b] hover:text-white"
-            >
-              <X className="w-3 h-3" />
-            </button>
-          )}
+        <div className="flex items-center gap-2 flex-1 sm:max-w-sm justify-end">
+          <div className="relative flex-1">
+            <Search className="w-3.5 h-3.5 text-[#71706b] absolute left-3 top-1/2 -translate-y-1/2" />
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Search posts..."
+              className="w-full bg-[#191918] border border-[#2a2a27] rounded-xl pl-8 pr-7 py-1.5 text-xs text-white placeholder-[#71706b] outline-none focus:border-[#4d4d48]"
+            />
+            {searchQuery && (
+              <button
+                onClick={() => setSearchQuery('')}
+                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[#71706b] hover:text-white"
+              >
+                <X className="w-3 h-3" />
+              </button>
+            )}
+          </div>
+
+          <button
+            type="button"
+            onClick={onOpenNotificationSettings}
+            className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl border text-xs transition-colors shrink-0 ${
+              notificationsEnabled
+                ? 'bg-[#191918] border-[#2a2a27] text-[#edece8] hover:border-[#3d3d39]'
+                : 'bg-[#141413] border-[#262624] text-[#71706b] hover:text-white hover:border-[#363632]'
+            }`}
+            title="Edit post notification & sound settings"
+          >
+            {notificationsEnabled ? (
+              <Bell className="w-3.5 h-3.5" />
+            ) : (
+              <BellOff className="w-3.5 h-3.5" />
+            )}
+            <span className="hidden sm:inline">
+              {notificationsEnabled ? 'Alerts' : 'Muted'}
+            </span>
+          </button>
         </div>
       </div>
 

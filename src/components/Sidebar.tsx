@@ -7,6 +7,8 @@ import {
   Users,
   Send,
   LogOut,
+  Bell,
+  BellOff,
 } from 'lucide-react';
 import { SidebarChannel, TeamMember } from '../types/team.ts';
 import { Avatar } from './Avatar.tsx';
@@ -21,6 +23,8 @@ interface SidebarProps {
   members: TeamMember[];
   selectedDmUserId: string | null;
   onOpenDm: (targetUid: string) => void;
+  notificationsEnabled: boolean;
+  onOpenNotificationSettings: () => void;
   currentMember: TeamMember | null;
   onSignOut: () => void;
   isOpen: boolean;
@@ -47,6 +51,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
   members,
   selectedDmUserId,
   onOpenDm,
+  notificationsEnabled,
+  onOpenNotificationSettings,
   currentMember,
   onSignOut,
   isOpen,
@@ -187,8 +193,31 @@ export const Sidebar: React.FC<SidebarProps> = ({
         </nav>
       </div>
 
-      {/* Bottom Current Closer Profile Strip */}
-      <div className="border-t border-[#1e1e1c] p-2.5">
+      {/* Bottom Alerts Trigger & Current Closer Profile Strip */}
+      <div className="border-t border-[#1e1e1c] p-2.5 space-y-1.5">
+        <button
+          type="button"
+          onClick={onOpenNotificationSettings}
+          className={`w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg text-xs transition-colors text-[#9c9a92] hover:text-white hover:bg-[#181816] ${
+            !isOpen ? 'justify-center px-0' : ''
+          }`}
+          title="Edit post notifications & sound"
+        >
+          <span className="flex items-center gap-2 min-w-0">
+            {notificationsEnabled ? (
+              <Bell className="w-3.5 h-3.5 shrink-0 text-[#edece8]" />
+            ) : (
+              <BellOff className="w-3.5 h-3.5 shrink-0 text-[#71706b]" />
+            )}
+            {isOpen && <span className="truncate">Post alerts</span>}
+          </span>
+          {isOpen && (
+            <span className="text-[11px] text-[#71706b]">
+              {notificationsEnabled ? 'On' : 'Off'}
+            </span>
+          )}
+        </button>
+
         {isOpen ? (
           <div className="flex items-center justify-between gap-2 px-2 py-1.5 rounded-lg hover:bg-[#161614] transition-colors">
             <button
