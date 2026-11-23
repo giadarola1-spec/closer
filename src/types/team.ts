@@ -160,5 +160,21 @@ export interface DrawboardStroke {
   createdAt: any;
 }
 
+export interface SupervisorRecord {
+  id: string;
+  uid: string;
+  teamId: (typeof ACCEPTED_TEAM_IDS)[number];
+  displayName: string;
+  active: boolean;
+  createdAt: any;
+  updatedAt: any;
+}
+
+export interface SupervisorStatusResponse {
+  configured: boolean;
+  mode: 'env' | 'claimed' | 'unconfigured';
+}
+
+
 
 

@@ -148,6 +148,7 @@ export const TweetHeader = ({
   logo = "closer",
   timestamp,
   pinned,
+  authorBadge,
   headerActions,
   onAuthorClick,
 }: {
@@ -155,6 +156,7 @@ export const TweetHeader = ({
   logo?: TweetLogo
   timestamp?: string
   pinned?: boolean
+  authorBadge?: React.ReactNode
   headerActions?: React.ReactNode
   onAuthorClick?: () => void
 }) => {
@@ -201,6 +203,7 @@ export const TweetHeader = ({
             {(tweet.user.verified || tweet.user.is_blue_verified) && (
               <Verified className="inline size-3.5 shrink-0 text-[#a3a29b]" />
             )}
+            {authorBadge}
             {pinned && (
               <>
                 <span className="text-[#5c5b56]" aria-hidden="true">·</span>
@@ -337,6 +340,7 @@ export interface MagicTweetProps {
   imageUrl?: string | null
   timestamp?: string
   pinned?: boolean
+  authorBadge?: React.ReactNode
   headerActions?: React.ReactNode
   footer?: React.ReactNode
   onAuthorClick?: () => void
@@ -350,6 +354,7 @@ export const MagicTweet = ({
   imageUrl,
   timestamp,
   pinned,
+  authorBadge,
   headerActions,
   footer,
   onAuthorClick,
@@ -389,6 +394,7 @@ export const MagicTweet = ({
         logo={logo}
         timestamp={timestamp}
         pinned={pinned}
+        authorBadge={authorBadge}
         headerActions={headerActions}
         onAuthorClick={onAuthorClick}
       />

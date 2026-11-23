@@ -4,8 +4,11 @@ import {
   collection,
   doc,
   getDoc,
+  getDocs,
   setDoc,
   updateDoc,
+  deleteDoc,
+  writeBatch,
   query,
   where,
   onSnapshot,
@@ -29,12 +32,14 @@ import {
   DirectThread,
   NotificationPreferences,
   PostAlert,
+  SupervisorRecord,
 } from './types/team.ts';
 import { Sidebar } from './components/Sidebar.tsx';
 import { TeamFeedView } from './components/TeamFeedView.tsx';
 import { RosterView } from './components/RosterView.tsx';
 import { DirectMessagesView } from './components/DirectMessagesView.tsx';
 import { NotificationSettingsModal } from './components/NotificationSettingsModal.tsx';
+import { SupervisorModal } from './components/SupervisorModal.tsx';
 import { PostNotificationBanner } from './components/PostNotificationBanner.tsx';
 import { Toast } from './components/Toast.tsx';
 import { sanitizePhotoUrl } from './utils/image.ts';
@@ -60,7 +65,16 @@ export default function App() {
   const [members, setMembers] = useState<TeamMember[]>([]);
   const [posts, setPosts] = useState<TeamPost[]>([]);
   const [threads, setThreads] = useState<DirectThread[]>([]);
+  const [supervisors, setSupervisors] = useState<SupervisorRecord[]>([]);
   const [isLoadingPosts, setIsLoadingPosts] = useState(true);
+
+  const [supervisorToken, setSupervisorToken] = useState<string | null>(null);
+  const [supervisorStatusMode, setSupervisorStatusMode] = useState<
+    'env' | 'claimed' | 'unconfigured' | 'loading'
+  >('loading');
+  const [isSupervisorModalOpen, setIsSupervisorModalOpen] = useState(false);
+  const [supervisorBusy, setSupervisorBusy] = useState(false);
+  const [supervisorError, setSupervisorError] = useState<string | null>(null);
 
   const [activeChannel, setActiveChannel] = useState<SidebarChannel>('feed');
   const [selectedDmUserId, setSelectedDmUserId] = useState<string | null>(null);
@@ -74,6 +88,7 @@ export default function App() {
   const [savingNotificationPrefs, setSavingNotificationPrefs] = useState(false);
   const [isNotificationModalOpen, setIsNotificationModalOpen] = useState(false);
   const [postAlerts, setPostAlerts] = useState<PostAlert[]>([]);
+  const [composerOpenNonce, setComposerOpenNonce] = useState(0);
 
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
   const toastTimerRef = useRef<number | null>(null);
@@ -142,6 +157,10 @@ export default function App() {
         setMembers([]);
         setPosts([]);
         setThreads([]);
+        setSupervisors([]);
+        setSupervisorToken(null);
+        setIsSupervisorModalOpen(false);
+        setSupervisorError(null);
         setPostAlerts([]);
         setSelectedDmUserId(null);
         setNotificationPrefs(DEFAULT_NOTIFICATION_PREFS);
@@ -407,10 +426,28 @@ export default function App() {
       }
     );
 
+    const supervisorsQuery = query(
+      collection(db, 'supervisors'),
+      where('teamId', 'in', [...ACCEPTED_TEAM_IDS])
+    );
+    const unsubSupervisors = onSnapshot(
+      supervisorsQuery,
+      (snap) => {
+        const list = snap.docs.map(
+          (d) => ({ id: d.id, ...d.data() }) as SupervisorRecord
+        );
+        setSupervisors(list);
+      },
+      (error) => {
+        handleFirestoreError(error, OperationType.LIST, 'supervisors');
+      }
+    );
+
     return () => {
       unsubMembers();
       unsubPosts();
       unsubDms();
+      unsubSupervisors();
     };
   }, [authReady, user, profileReady]);
 
@@ -418,6 +455,236 @@ export default function App() {
     if (!user) return null;
     return members.find((m) => m.uid === user.uid) || bootstrapMember;
   }, [members, user, bootstrapMember]);
+
+  const supervisorIds = useMemo(() => {
+    return new Set(supervisors.filter((s) => s.active).map((s) => s.uid));
+  }, [supervisors]);
+
+  const isSupervisor = Boolean(user && supervisorIds.has(user.uid));
+
+  const refreshSupervisorStatus = async () => {
+    try {
+      const res = await fetch('/api/supervisor/status');
+      if (!res.ok) throw new Error('Unable to check supervisor status');
+      const data = await res.json();
+      if (
+        data.mode === 'env' ||
+        data.mode === 'claimed' ||
+        data.mode === 'unconfigured'
+      ) {
+        setSupervisorStatusMode(data.mode);
+      }
+    } catch {
+      setSupervisorStatusMode((prev) => (prev === 'loading' ? 'env' : prev));
+    }
+  };
+
+  useEffect(() => {
+    if (authReady && user && profileReady) {
+      refreshSupervisorStatus();
+    }
+  }, [authReady, user, profileReady]);
+
+  const handleOpenSupervisorModal = () => {
+    setSupervisorError(null);
+    setIsSupervisorModalOpen(true);
+    refreshSupervisorStatus();
+  };
+
+  const activateSupervisorInFirestore = async (syncKey: string) => {
+    if (!user || !currentMember) return;
+    const isAdminEmail = user.email === 'giadarola1@gmail.com';
+    const supRef = doc(db, 'supervisors', user.uid);
+    const supSnap = await getDoc(supRef);
+    const batch = writeBatch(db);
+    const cleanName =
+      currentMember.displayName.slice(0, LIMITS.DISPLAY_NAME_MAX) || 'Closer';
+
+    if (isAdminEmail) {
+      batch.set(doc(db, 'app_config', 'supervisor'), {
+        syncKey,
+        updatedAt: serverTimestamp(),
+      });
+    } else {
+      batch.set(doc(db, 'supervisor_claims', user.uid), {
+        uid: user.uid,
+        syncKey,
+        updatedAt: serverTimestamp(),
+      });
+    }
+
+    if (supSnap.exists()) {
+      batch.update(supRef, {
+        displayName: cleanName,
+        active: true,
+        updatedAt: serverTimestamp(),
+      });
+    } else {
+      batch.set(supRef, {
+        uid: user.uid,
+        teamId: TEAM_ID,
+        displayName: cleanName,
+        active: true,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+    }
+
+    await batch.commit();
+  };
+
+  const handleSupervisorClaim = async (passcode: string) => {
+    if (!user || supervisorBusy) return;
+    setSupervisorBusy(true);
+    setSupervisorError(null);
+    try {
+      const res = await fetch('/api/supervisor/claim', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ uid: user.uid, passcode }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        if (res.status === 409) {
+          await refreshSupervisorStatus();
+        }
+        setSupervisorError(data.error || 'Could not configure supervisor passcode.');
+        return;
+      }
+
+      setSupervisorToken(data.token || null);
+      setSupervisorStatusMode('claimed');
+      await activateSupervisorInFirestore(data.syncKey);
+      setIsSupervisorModalOpen(false);
+      showToast('Supervisor mode activated');
+    } catch (error) {
+      const msg =
+        error instanceof Error && error.message.toLowerCase().includes('permission')
+          ? 'An admin must activate Supervisor once before other teammates can claim it.'
+          : error instanceof Error
+            ? error.message
+            : 'Unable to activate Supervisor mode.';
+      setSupervisorError(msg);
+    } finally {
+      setSupervisorBusy(false);
+    }
+  };
+
+  const handleSupervisorLogin = async (passcode: string) => {
+    if (!user || supervisorBusy) return;
+    setSupervisorBusy(true);
+    setSupervisorError(null);
+    try {
+      const res = await fetch('/api/supervisor/verify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ uid: user.uid, passcode }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setSupervisorError(data.error || 'Incorrect supervisor password.');
+        return;
+      }
+
+      setSupervisorToken(data.token || null);
+      await activateSupervisorInFirestore(data.syncKey);
+      setIsSupervisorModalOpen(false);
+      showToast('Supervisor mode activated');
+    } catch (error) {
+      const msg =
+        error instanceof Error && error.message.toLowerCase().includes('permission')
+          ? 'An admin must activate Supervisor once before other teammates can claim it.'
+          : error instanceof Error
+            ? error.message
+            : 'Unable to verify supervisor password.';
+      setSupervisorError(msg);
+    } finally {
+      setSupervisorBusy(false);
+    }
+  };
+
+  const handleSupervisorLogout = async () => {
+    if (!user || supervisorBusy) return;
+    setSupervisorBusy(true);
+    setSupervisorError(null);
+    try {
+      await fetch('/api/supervisor/logout', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(supervisorToken ? { Authorization: `Bearer ${supervisorToken}` } : {}),
+        },
+        body: JSON.stringify({ uid: user.uid }),
+      }).catch(() => {});
+
+      await deleteDoc(doc(db, 'supervisors', user.uid));
+      await deleteDoc(doc(db, 'supervisor_claims', user.uid)).catch(() => {});
+      setSupervisorToken(null);
+      setIsSupervisorModalOpen(false);
+      showToast('Signed out of Supervisor');
+    } catch (error) {
+      handleFirestoreError(error, OperationType.DELETE, `supervisors/${user.uid}`);
+    } finally {
+      setSupervisorBusy(false);
+    }
+  };
+
+  const handleUnpinAllPosts = async () => {
+    if (!isSupervisor || supervisorBusy) return;
+    const pinnedPosts = posts.filter((p) => p.pinned);
+    if (pinnedPosts.length === 0) return;
+
+    setSupervisorBusy(true);
+    try {
+      const batch = writeBatch(db);
+      for (const p of pinnedPosts) {
+        batch.update(doc(db, 'posts', p.id), {
+          pinned: false,
+          updatedAt: serverTimestamp(),
+        });
+      }
+      await batch.commit();
+      showToast(
+        `Unpinned ${pinnedPosts.length} ${pinnedPosts.length === 1 ? 'post' : 'posts'}`
+      );
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, 'posts');
+    } finally {
+      setSupervisorBusy(false);
+    }
+  };
+
+  const handleClearScratchpad = async () => {
+    if (!isSupervisor || supervisorBusy) return;
+    setSupervisorBusy(true);
+    try {
+      const strokesSnap = await getDocs(
+        query(
+          collection(db, 'drawboard_strokes'),
+          where('teamId', 'in', [...ACCEPTED_TEAM_IDS])
+        )
+      );
+      if (strokesSnap.empty) {
+        showToast('Scratchpad is already clear');
+        return;
+      }
+
+      const docs = strokesSnap.docs;
+      for (let i = 0; i < docs.length; i += 450) {
+        const chunk = docs.slice(i, i + 450);
+        const batch = writeBatch(db);
+        for (const d of chunk) {
+          batch.delete(d.ref);
+        }
+        await batch.commit();
+      }
+      showToast('Scratchpad cleared');
+    } catch (error) {
+      handleFirestoreError(error, OperationType.DELETE, 'drawboard_strokes');
+    } finally {
+      setSupervisorBusy(false);
+    }
+  };
 
   const handleSignIn = async () => {
     setAuthBusy(true);
@@ -501,9 +768,10 @@ export default function App() {
     if (activeChannel !== 'feed') {
       setActiveChannel('feed');
     }
+    setComposerOpenNonce((n) => n + 1);
     window.setTimeout(() => {
       composerRef.current?.focus();
-    }, 40);
+    }, 60);
   };
 
   const handleCopyText = (text: string, label: string) => {
@@ -609,6 +877,9 @@ export default function App() {
         notificationsEnabled={notificationPrefs.postNotificationsEnabled}
         onOpenNotificationSettings={() => setIsNotificationModalOpen(true)}
         currentMember={currentMember}
+        supervisorIds={supervisorIds}
+        isSupervisor={isSupervisor}
+        onOpenSupervisorModal={handleOpenSupervisorModal}
         onSignOut={handleSignOut}
         isOpen={isSidebarOpen}
         onToggleOpen={() => setIsSidebarOpen(!isSidebarOpen)}
@@ -651,6 +922,9 @@ export default function App() {
               threads={threads}
               currentUserId={currentMember.uid}
               googlePhotoUrl={user.photoURL}
+              supervisorIds={supervisorIds}
+              isSupervisor={isSupervisor}
+              onOpenSupervisorModal={handleOpenSupervisorModal}
               onOpenDm={handleOpenDm}
               onNotify={showToast}
             />
@@ -659,6 +933,7 @@ export default function App() {
               currentMember={currentMember}
               members={members}
               threads={threads}
+              supervisorIds={supervisorIds}
               selectedUserId={selectedDmUserId}
               onSelectUser={(uid) => setSelectedDmUserId(uid)}
               onNotify={showToast}
@@ -667,7 +942,10 @@ export default function App() {
             <TeamFeedView
               currentMember={currentMember}
               members={members}
+              supervisorIds={supervisorIds}
+              isSupervisor={isSupervisor}
               composerRef={composerRef}
+              composerOpenNonce={composerOpenNonce}
               onCopyText={handleCopyText}
               onOpenDm={handleOpenDm}
               onNotify={showToast}
@@ -693,6 +971,24 @@ export default function App() {
         onUpdatePrefs={handleUpdateNotificationPrefs}
         onTestAlert={handleTestAlert}
         onClose={() => setIsNotificationModalOpen(false)}
+      />
+
+      <SupervisorModal
+        isOpen={isSupervisorModalOpen}
+        onClose={() => setIsSupervisorModalOpen(false)}
+        currentMember={currentMember}
+        isSupervisor={isSupervisor}
+        supervisors={supervisors}
+        posts={posts}
+        statusMode={supervisorStatusMode}
+        busy={supervisorBusy}
+        error={supervisorError}
+        onClearError={() => setSupervisorError(null)}
+        onLogin={handleSupervisorLogin}
+        onClaim={handleSupervisorClaim}
+        onLogout={handleSupervisorLogout}
+        onUnpinAllPosts={handleUnpinAllPosts}
+        onClearScratchpad={handleClearScratchpad}
       />
 
       <Toast message={toastMessage} />

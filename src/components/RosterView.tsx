@@ -4,13 +4,29 @@ import { db, OperationType, handleFirestoreError } from '../firebase.ts';
 import { TeamMember, DirectThread, LIMITS, getOtherParticipantId } from '../types/team.ts';
 import { compressProfileImage, sanitizePhotoUrl } from '../utils/image.ts';
 import { Avatar } from './Avatar.tsx';
-import { Check, Edit3, Phone, Camera, Upload, Trash2, Send, Search, X } from 'lucide-react';
+import { SupervisorBadge } from './SupervisorBadge.tsx';
+import {
+  Check,
+  Edit3,
+  Phone,
+  Camera,
+  Upload,
+  Trash2,
+  Send,
+  Search,
+  X,
+  Shield,
+  ShieldCheck,
+} from 'lucide-react';
 
 interface RosterViewProps {
   members: TeamMember[];
   threads: DirectThread[];
   currentUserId: string;
   googlePhotoUrl?: string | null;
+  supervisorIds: Set<string>;
+  isSupervisor: boolean;
+  onOpenSupervisorModal: () => void;
   onOpenDm: (targetUid: string) => void;
   onNotify: (msg: string) => void;
 }
@@ -34,6 +50,9 @@ export const RosterView: React.FC<RosterViewProps> = ({
   threads,
   currentUserId,
   googlePhotoUrl,
+  supervisorIds,
+  isSupervisor,
+  onOpenSupervisorModal,
   onOpenDm,
   onNotify,
 }) => {
@@ -54,6 +73,11 @@ export const RosterView: React.FC<RosterViewProps> = ({
   const [photoSaving, setPhotoSaving] = useState(false);
   const [statusSaving, setStatusSaving] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
+
+  const [moderatingUid, setModeratingUid] = useState<string | null>(null);
+  const [modStatusInput, setModStatusInput] = useState('');
+  const [modCallsInput, setModCallsInput] = useState('0');
+  const [modSaving, setModSaving] = useState(false);
 
   const cardFileInputRef = useRef<HTMLInputElement | null>(null);
   const editFileInputRef = useRef<HTMLInputElement | null>(null);
@@ -188,6 +212,34 @@ export const RosterView: React.FC<RosterViewProps> = ({
     }
   };
 
+  const handleStartModerate = (member: TeamMember) => {
+    setModeratingUid(member.uid);
+    setModStatusInput(member.statusText || '');
+    setModCallsInput(String(member.dailyCalls ?? 0));
+  };
+
+  const handleSaveModeration = async (e: React.FormEvent, member: TeamMember) => {
+    e.preventDefault();
+    if (!isSupervisor || modSaving) return;
+    const cleanStatus = modStatusInput.trim().slice(0, LIMITS.STATUS_TEXT_MAX);
+    const cleanCalls = sanitizeCalls(modCallsInput);
+    setModSaving(true);
+    const path = `members/${member.uid}`;
+    try {
+      await updateDoc(doc(db, 'members', member.uid), {
+        statusText: cleanStatus,
+        dailyCalls: cleanCalls,
+        updatedAt: serverTimestamp(),
+      });
+      setModeratingUid(null);
+      onNotify(`Updated ${member.displayName}`);
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, path);
+    } finally {
+      setModSaving(false);
+    }
+  };
+
   const sortedMembers = [...members].sort((a, b) => {
     if (a.uid === currentUserId) return -1;
     if (b.uid === currentUserId) return 1;
@@ -270,6 +322,24 @@ export const RosterView: React.FC<RosterViewProps> = ({
               <span>Edit profile</span>
             </button>
           )}
+
+          <button
+            type="button"
+            onClick={onOpenSupervisorModal}
+            className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl border text-xs transition-colors whitespace-nowrap shrink-0 ${
+              isSupervisor
+                ? 'bg-[#231b10] border-[#4a3518] text-[#f2c46d] hover:border-[#6e4f23]'
+                : 'bg-[#191918] hover:bg-[#242422] border-[#2a2a27] text-[#8d8c85] hover:text-white'
+            }`}
+            title={isSupervisor ? 'Supervisor profile active' : 'Supervisor login'}
+          >
+            {isSupervisor ? (
+              <ShieldCheck className="w-3.5 h-3.5 text-[#eab308]" />
+            ) : (
+              <Shield className="w-3.5 h-3.5" />
+            )}
+            <span className="hidden sm:inline">Supervisor</span>
+          </button>
         </div>
       </div>
 
@@ -478,6 +548,8 @@ export const RosterView: React.FC<RosterViewProps> = ({
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
           {filteredMembers.map((member) => {
             const isMe = member.uid === currentUserId;
+            const memberIsSupervisor = supervisorIds.has(member.uid);
+            const isModeratingThis = moderatingUid === member.uid;
             const callsCount = typeof member.dailyCalls === 'number' ? member.dailyCalls : 0;
 
             return (
@@ -515,20 +587,81 @@ export const RosterView: React.FC<RosterViewProps> = ({
 
                 <div className="min-w-0 flex-1 space-y-1">
                   <div className="flex items-center justify-between gap-2">
-                    <span className="text-sm font-medium text-white truncate">
-                      {member.displayName}
-                    </span>
-                    {isMe && (
-                      <span className="text-[11px] text-[#9c9a92] shrink-0">
-                        You
+                    <div className="flex items-center gap-1.5 min-w-0">
+                      <span className="text-sm font-medium text-white truncate">
+                        {member.displayName}
                       </span>
-                    )}
+                      {memberIsSupervisor && <SupervisorBadge compact />}
+                    </div>
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      {isMe && (
+                        <span className="text-[11px] text-[#9c9a92]">
+                          You
+                        </span>
+                      )}
+                      {isSupervisor && !isMe && !isModeratingThis && (
+                        <button
+                          type="button"
+                          onClick={() => handleStartModerate(member)}
+                          className="p-1 rounded-md text-[#71706b] hover:text-white hover:bg-[#242422] transition-colors"
+                          title={`Update ${member.displayName}'s status or calls (Supervisor)`}
+                        >
+                          <Edit3 className="w-3 h-3" />
+                        </button>
+                      )}
+                    </div>
                   </div>
                   <p className="text-xs text-[#9c9a92] leading-relaxed min-h-[32px]">
                     {member.statusText || 'On the phones'}
                   </p>
                 </div>
               </div>
+
+              {isSupervisor && !isMe && isModeratingThis && (
+                <form
+                  onSubmit={(e) => handleSaveModeration(e, member)}
+                  className="bg-[#141413] border border-[#2a2a27] rounded-xl p-2.5 space-y-2"
+                >
+                  <div className="grid grid-cols-[1fr_72px] gap-2">
+                    <input
+                      type="text"
+                      value={modStatusInput}
+                      onChange={(e) => setModStatusInput(e.target.value)}
+                      maxLength={LIMITS.STATUS_TEXT_MAX}
+                      placeholder="Status..."
+                      disabled={modSaving}
+                      className="w-full bg-[#191918] border border-[#2c2c29] rounded-lg px-2.5 py-1 text-xs text-white outline-none focus:border-[#4d4d48]"
+                    />
+                    <input
+                      type="number"
+                      min={0}
+                      max={LIMITS.DAILY_CALLS_MAX}
+                      value={modCallsInput}
+                      onChange={(e) => setModCallsInput(e.target.value)}
+                      disabled={modSaving}
+                      aria-label={`Calls per day for ${member.displayName}`}
+                      className="w-full bg-[#191918] border border-[#2c2c29] rounded-lg px-2 py-1 text-right text-xs text-white tabular-nums outline-none focus:border-[#4d4d48]"
+                    />
+                  </div>
+                  <div className="flex items-center justify-end gap-1.5">
+                    <button
+                      type="button"
+                      disabled={modSaving}
+                      onClick={() => setModeratingUid(null)}
+                      className="px-2 py-1 rounded-md text-[11px] text-[#8d8c85] hover:text-white"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={modSaving}
+                      className="px-2.5 py-1 rounded-md bg-white hover:bg-[#e0dfd9] disabled:opacity-50 text-black text-[11px] font-medium"
+                    >
+                      {modSaving ? 'Saving...' : 'Save'}
+                    </button>
+                  </div>
+                </form>
+              )}
 
               {/* Daily Calls Counter (direct numeric input, no +/- buttons) & Private Message */}
               <div className="pt-2.5 border-t border-[#222220] space-y-2.5">

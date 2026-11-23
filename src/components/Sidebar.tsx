@@ -11,9 +11,12 @@ import {
   BellOff,
   Truck,
   X,
+  Shield,
+  ShieldCheck,
 } from 'lucide-react';
 import { SidebarChannel, TeamMember } from '../types/team.ts';
 import { Avatar } from './Avatar.tsx';
+import { SupervisorBadge } from './SupervisorBadge.tsx';
 
 interface SidebarProps {
   activeChannel: SidebarChannel;
@@ -28,6 +31,9 @@ interface SidebarProps {
   notificationsEnabled: boolean;
   onOpenNotificationSettings: () => void;
   currentMember: TeamMember | null;
+  supervisorIds: Set<string>;
+  isSupervisor: boolean;
+  onOpenSupervisorModal: () => void;
   onSignOut: () => void;
   isOpen: boolean;
   onToggleOpen: () => void;
@@ -58,6 +64,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
   notificationsEnabled,
   onOpenNotificationSettings,
   currentMember,
+  supervisorIds,
+  isSupervisor,
+  onOpenSupervisorModal,
   onSignOut,
   isOpen,
   onToggleOpen,
@@ -244,6 +253,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
                           {person.displayName}
                           {isMe ? ' (You)' : ''}
                         </span>
+                        {supervisorIds.has(person.uid) && (
+                          <SupervisorBadge compact />
+                        )}
                       </button>
                     );
                   })}
@@ -281,6 +293,38 @@ export const Sidebar: React.FC<SidebarProps> = ({
             )}
           </button>
 
+          <button
+            type="button"
+            onClick={() => {
+              onOpenSupervisorModal();
+              onCloseMobile();
+            }}
+            className={`w-full flex items-center justify-between px-2.5 py-2 rounded-xl text-xs transition-colors whitespace-nowrap ${
+              isSupervisor
+                ? 'text-[#f2c46d] hover:bg-[#231b10]/60'
+                : 'text-[#8d8c85] hover:text-white hover:bg-[#171715]'
+            } ${!expanded ? 'justify-center px-0' : ''}`}
+            title={isSupervisor ? 'Supervisor profile active' : 'Supervisor login'}
+          >
+            <span className="flex items-center gap-2 min-w-0">
+              {isSupervisor ? (
+                <ShieldCheck className="w-3.5 h-3.5 shrink-0 text-[#eab308]" />
+              ) : (
+                <Shield className="w-3.5 h-3.5 shrink-0 text-[#71706b]" />
+              )}
+              {expanded && <span className="truncate">Supervisor</span>}
+            </span>
+            {expanded && (
+              <span
+                className={`text-[11px] ${
+                  isSupervisor ? 'text-[#f2c46d]' : 'text-[#71706b]'
+                }`}
+              >
+                {isSupervisor ? 'Active' : 'Login'}
+              </span>
+            )}
+          </button>
+
           {expanded ? (
             <div className="flex items-center justify-between gap-2 px-2 py-1.5 rounded-xl hover:bg-[#171715] transition-colors">
               <button
@@ -295,8 +339,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   size="sm"
                 />
                 <div className="min-w-0 flex-1">
-                  <div className="text-xs font-medium text-[#edece8] truncate">
-                    {currentMember?.displayName || 'Closer'}
+                  <div className="flex items-center gap-1.5 min-w-0">
+                    <span className="text-xs font-medium text-[#edece8] truncate">
+                      {currentMember?.displayName || 'Closer'}
+                    </span>
+                    {isSupervisor && <SupervisorBadge compact />}
                   </div>
                   <div className="text-[11px] text-[#71706b] truncate tabular-nums">
                     {currentMember?.dailyCalls ?? 0} calls/day · {currentMember?.statusText || 'On the phones'}

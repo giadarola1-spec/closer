@@ -412,6 +412,82 @@
         }
       },
       "required": ["teamId", "points", "color", "width", "userId", "userName", "createdAt"]
+    },
+    "SupervisorRecord": {
+      "title": "SupervisorRecord",
+      "description": "Public team-visible Supervisor status record enabling badge display and moderation permissions.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "teamId": {
+          "type": "string",
+          "enum": ["gtt-closers", "gtt-closers-9"]
+        },
+        "displayName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 60
+        },
+        "active": {
+          "type": "boolean"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["uid", "teamId", "displayName", "active", "createdAt", "updatedAt"]
+    },
+    "SupervisorClaim": {
+      "title": "SupervisorClaim",
+      "description": "Write-only verification proof written atomically when activating Supervisor status.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "syncKey": {
+          "type": "string",
+          "minLength": 64,
+          "maxLength": 64,
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["uid", "syncKey", "updatedAt"]
+    },
+    "SupervisorConfig": {
+      "title": "SupervisorConfig",
+      "description": "Non-readable server-derived syncKey verifier managed by admin for Supervisor activation.",
+      "type": "object",
+      "properties": {
+        "syncKey": {
+          "type": "string",
+          "minLength": 64,
+          "maxLength": 64,
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["syncKey", "updatedAt"]
     }
   },
   "firestore": {
@@ -446,6 +522,18 @@
     "/drawboard_strokes/{strokeId}": {
       "schema": { "$ref": "#/entities/DrawboardStroke" },
       "description": "Collaborative real-time Team Scratchpad strokes ordered by createdAt."
+    },
+    "/supervisors/{supervisorId}": {
+      "schema": { "$ref": "#/entities/SupervisorRecord" },
+      "description": "Team-visible Supervisor badge registry and Firestore moderation role."
+    },
+    "/supervisor_claims/{claimUid}": {
+      "schema": { "$ref": "#/entities/SupervisorClaim" },
+      "description": "Write-only verification proof checked atomically during Supervisor activation."
+    },
+    "/app_config/{configId}": {
+      "schema": { "$ref": "#/entities/SupervisorConfig" },
+      "description": "Write-only admin-managed Supervisor verification config."
     }
   }
 }

@@ -29,6 +29,10 @@ import {
   ImagePlus,
   Loader2,
   AlertCircle,
+  ArrowUpDown,
+  ChevronDown,
+  Check,
+  Plus,
 } from 'lucide-react';
 import { db, OperationType, handleFirestoreError } from '../firebase.ts';
 import {
@@ -41,6 +45,7 @@ import {
 } from '../types/team.ts';
 import { Avatar } from './Avatar.tsx';
 import { TeamScratchpad } from './TeamScratchpad.tsx';
+import { SupervisorBadge } from './SupervisorBadge.tsx';
 import { TweetCard, TweetSkeleton } from '@/components/ui/tweet-card';
 import {
   MAX_POST_IMAGE_BYTES,
@@ -51,7 +56,10 @@ import {
 interface TeamFeedViewProps {
   currentMember: TeamMember;
   members: TeamMember[];
+  supervisorIds: Set<string>;
+  isSupervisor: boolean;
   composerRef: React.RefObject<HTMLTextAreaElement | null>;
+  composerOpenNonce?: number;
   onCopyText: (text: string, label: string) => void;
   onOpenDm: (targetUid: string) => void;
   onNotify: (msg: string) => void;
@@ -69,6 +77,59 @@ function formatRelativeTime(ts: any): string {
   if (diffSec < 3600) return `${Math.floor(diffSec / 60)}m ago`;
   if (diffSec < 86400) return `${Math.floor(diffSec / 3600)}h ago`;
   return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+}
+
+type FeedFilterMode = 'all' | 'pinned' | 'images';
+type FeedSortMode = 'recent' | 'relevant' | 'interactions' | 'likes' | 'replies';
+
+const SORT_OPTIONS: { id: FeedSortMode; label: string; title: string }[] = [
+  { id: 'recent', label: 'Recent', title: 'Newest posts first (pinned on top)' },
+  {
+    id: 'relevant',
+    label: 'Relevant',
+    title: 'Balances engagement, recency, pinned updates, and search matches',
+  },
+  {
+    id: 'interactions',
+    label: 'Most interactions',
+    title: 'Highest combined likes and replies',
+  },
+  { id: 'likes', label: 'Most liked', title: 'Most likes first' },
+  { id: 'replies', label: 'Most replies', title: 'Most replies first' },
+];
+
+function getPostMillis(post: TeamPost, fallbackMs: number): number {
+  if (!post.createdAt) return fallbackMs;
+  if (typeof post.createdAt.toMillis === 'function') {
+    return post.createdAt.toMillis();
+  }
+  const parsed = new Date(post.createdAt).getTime();
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function scorePostRelevance(
+  post: TeamPost,
+  nowMs: number,
+  searchQueryLower: string,
+  authorDisplayName: string
+): number {
+  const likes = post.likeCount || 0;
+  const replies = post.replyCount || 0;
+  const engagement = likes * 2 + replies * 3;
+  const pinnedBoost = post.pinned ? 6 : 0;
+  const mediaBoost = sanitizePostImageUrl(post.imageUrl) ? 1.5 : 0;
+  const titleBoost = post.title?.trim() ? 0.5 : 0;
+
+  let searchBoost = 0;
+  if (searchQueryLower) {
+    if (post.title.toLowerCase().includes(searchQueryLower)) searchBoost += 12;
+    if (authorDisplayName.toLowerCase().includes(searchQueryLower)) searchBoost += 8;
+    if (post.body.toLowerCase().includes(searchQueryLower)) searchBoost += 4;
+  }
+
+  const ageHours = Math.max(0, (nowMs - getPostMillis(post, nowMs)) / 3_600_000);
+  const baseScore = 2 + engagement + pinnedBoost + mediaBoost + titleBoost + searchBoost;
+  return baseScore / Math.pow(ageHours + 2, 1.25);
 }
 
 function buildTweetFromPost(
@@ -177,6 +238,8 @@ interface PostCardProps {
   post: TeamPost;
   currentMember: TeamMember;
   membersById: Record<string, TeamMember>;
+  supervisorIds: Set<string>;
+  isSupervisor: boolean;
   onCopyText: (text: string, label: string) => void;
   onOpenDm: (targetUid: string) => void;
   onNotify: (msg: string) => void;
@@ -186,6 +249,8 @@ const PostCard: React.FC<PostCardProps> = ({
   post,
   currentMember,
   membersById,
+  supervisorIds,
+  isSupervisor,
   onCopyText,
   onOpenDm,
   onNotify,
@@ -201,9 +266,11 @@ const PostCard: React.FC<PostCardProps> = ({
   const [deleteBusy, setDeleteBusy] = useState(false);
 
   const isAuthor = post.authorId === currentMember.uid;
+  const canModeratePost = isAuthor || isSupervisor;
   const isArchived = post.stageStatus === 'archived';
   const authorMember = membersById[post.authorId];
   const displayAuthorName = authorMember?.displayName || post.authorName;
+  const authorIsSupervisor = supervisorIds.has(post.authorId);
 
   useEffect(() => {
     const likePath = `posts/${post.id}/likes/${currentMember.uid}`;
@@ -320,7 +387,7 @@ const PostCard: React.FC<PostCardProps> = ({
   };
 
   const handleTogglePin = async () => {
-    if (!isAuthor || isArchived) return;
+    if (!canModeratePost || (isArchived && !isSupervisor)) return;
     try {
       await updateDoc(doc(db, 'posts', post.id), {
         pinned: !post.pinned,
@@ -332,7 +399,7 @@ const PostCard: React.FC<PostCardProps> = ({
   };
 
   const handleDelete = async () => {
-    if (!isAuthor || deleteBusy) return;
+    if (!canModeratePost || deleteBusy) return;
     setDeleteBusy(true);
     try {
       await deleteDoc(doc(db, 'posts', post.id));
@@ -363,9 +430,9 @@ const PostCard: React.FC<PostCardProps> = ({
     [post, displayAuthorName, authorMember?.photoUrl]
   );
 
-  const headerActions = isAuthor ? (
+  const headerActions = canModeratePost ? (
     <div className="flex items-center gap-0.5 shrink-0">
-      {!isArchived && (
+      {(!isArchived || isSupervisor) && (
         <button
           type="button"
           onClick={handleTogglePin}
@@ -374,7 +441,15 @@ const PostCard: React.FC<PostCardProps> = ({
               ? 'text-[#edece8] bg-[#242422]'
               : 'text-[#71706b] hover:text-white hover:bg-[#222220]'
           }`}
-          title={post.pinned ? 'Unpin post' : 'Pin post'}
+          title={
+            post.pinned
+              ? !isAuthor && isSupervisor
+                ? 'Unpin post (Supervisor)'
+                : 'Unpin post'
+              : !isAuthor && isSupervisor
+                ? 'Pin post (Supervisor)'
+                : 'Pin post'
+          }
         >
           <Pin className="w-3.5 h-3.5" />
         </button>
@@ -385,7 +460,7 @@ const PostCard: React.FC<PostCardProps> = ({
           type="button"
           onClick={() => setConfirmDeletePost(true)}
           className="p-1.5 rounded-lg text-[#71706b] hover:text-white hover:bg-[#222220] transition-colors"
-          title="Delete post"
+          title={!isAuthor && isSupervisor ? 'Delete post (Supervisor)' : 'Delete post'}
         >
           <Trash2 className="w-3.5 h-3.5" />
         </button>
@@ -494,6 +569,8 @@ const PostCard: React.FC<PostCardProps> = ({
                 const commentMember = membersById[comment.authorId];
                 const commentName = commentMember?.displayName || comment.authorName;
                 const isOwnComment = comment.authorId === currentMember.uid;
+                const canDeleteComment = isOwnComment || isSupervisor;
+                const commentIsSupervisor = supervisorIds.has(comment.authorId);
                 return (
                   <div key={comment.id} className="group space-y-1 text-xs">
                     <div className="flex items-center justify-between gap-2">
@@ -506,16 +583,17 @@ const PostCard: React.FC<PostCardProps> = ({
                         <span className="font-medium text-[#edece8] truncate">
                           {commentName}
                         </span>
+                        {commentIsSupervisor && <SupervisorBadge compact />}
                         <span className="text-[#5c5b56] shrink-0 tabular-nums">
                           {formatRelativeTime(comment.createdAt)}
                         </span>
                       </div>
-                      {isOwnComment && (
+                      {canDeleteComment && (
                         <button
                           type="button"
                           onClick={() => handleDeleteComment(comment.id)}
                           className="opacity-0 group-hover:opacity-100 focus-visible:opacity-100 p-1 rounded text-[#71706b] hover:text-white hover:bg-[#222220] transition-opacity shrink-0"
-                          title="Delete reply"
+                          title={!isOwnComment && isSupervisor ? 'Delete reply (Supervisor)' : 'Delete reply'}
                         >
                           <Trash2 className="w-3 h-3" />
                         </button>
@@ -560,6 +638,7 @@ const PostCard: React.FC<PostCardProps> = ({
       imageUrl={safeImageUrl || null}
       timestamp={formatRelativeTime(post.createdAt)}
       pinned={post.pinned}
+      authorBadge={authorIsSupervisor ? <SupervisorBadge compact /> : undefined}
       headerActions={headerActions}
       footer={footerContent}
       onAuthorClick={authorMember ? () => onOpenDm(post.authorId) : undefined}
@@ -570,7 +649,10 @@ const PostCard: React.FC<PostCardProps> = ({
 export const TeamFeedView: React.FC<TeamFeedViewProps> = ({
   currentMember,
   members,
+  supervisorIds,
+  isSupervisor,
   composerRef,
+  composerOpenNonce = 0,
   onCopyText,
   onOpenDm,
   onNotify,
@@ -579,6 +661,7 @@ export const TeamFeedView: React.FC<TeamFeedViewProps> = ({
   posts,
   isLoadingPosts,
 }) => {
+  const [isComposerOpen, setIsComposerOpen] = useState(false);
   const [title, setTitle] = useState('');
   const [body, setBody] = useState('');
   const [selectedImageFile, setSelectedImageFile] = useState<File | null>(null);
@@ -587,10 +670,45 @@ export const TeamFeedView: React.FC<TeamFeedViewProps> = ({
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
-  const [feedFilter, setFeedFilter] = useState<'all' | 'pinned'>('all');
+  const [feedFilter, setFeedFilter] = useState<FeedFilterMode>('all');
+  const [sortBy, setSortBy] = useState<FeedSortMode>('recent');
+  const [isSortMenuOpen, setIsSortMenuOpen] = useState(false);
   const [isBoardOpen, setIsBoardOpen] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const sortMenuRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (composerOpenNonce > 0) {
+      setIsComposerOpen(true);
+      window.setTimeout(() => {
+        composerRef.current?.focus();
+      }, 40);
+    }
+  }, [composerOpenNonce, composerRef]);
+
+  useEffect(() => {
+    if (!isSortMenuOpen) return;
+    const handlePointerDown = (event: MouseEvent) => {
+      if (
+        sortMenuRef.current &&
+        !sortMenuRef.current.contains(event.target as Node)
+      ) {
+        setIsSortMenuOpen(false);
+      }
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setIsSortMenuOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handlePointerDown);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [isSortMenuOpen]);
 
   useEffect(() => {
     return () => {
@@ -695,6 +813,7 @@ export const TeamFeedView: React.FC<TeamFeedViewProps> = ({
       setTitle('');
       setBody('');
       handleClearSelectedImage();
+      setIsComposerOpen(false);
       onNotify('Post shared');
     } catch (error) {
       handleFirestoreError(error, OperationType.CREATE, `posts/${postRef.id}`);
@@ -712,12 +831,19 @@ export const TeamFeedView: React.FC<TeamFeedViewProps> = ({
   };
 
   const pinnedCount = useMemo(() => posts.filter((p) => p.pinned).length, [posts]);
+  const imagePostCount = useMemo(
+    () => posts.filter((p) => Boolean(sanitizePostImageUrl(p.imageUrl))).length,
+    [posts]
+  );
 
   const filteredPosts = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
+    const nowMs = Date.now();
+
     return posts
       .filter((p) => {
         if (feedFilter === 'pinned' && !p.pinned) return false;
+        if (feedFilter === 'images' && !sanitizePostImageUrl(p.imageUrl)) return false;
         if (!q) return true;
         const liveAuthor = membersById[p.authorId]?.displayName || p.authorName;
         return (
@@ -727,17 +853,63 @@ export const TeamFeedView: React.FC<TeamFeedViewProps> = ({
         );
       })
       .sort((a, b) => {
+        const ta = getPostMillis(a, nowMs);
+        const tb = getPostMillis(b, nowMs);
+
+        if (sortBy === 'relevant') {
+          const authorA = membersById[a.authorId]?.displayName || a.authorName;
+          const authorB = membersById[b.authorId]?.displayName || b.authorName;
+          const scoreDiff =
+            scorePostRelevance(b, nowMs, q, authorB) -
+            scorePostRelevance(a, nowMs, q, authorA);
+          if (Math.abs(scoreDiff) > 0.0001) return scoreDiff;
+          return tb - ta;
+        }
+
+        if (sortBy === 'interactions') {
+          const totalA = (a.likeCount || 0) + (a.replyCount || 0);
+          const totalB = (b.likeCount || 0) + (b.replyCount || 0);
+          if (totalB !== totalA) return totalB - totalA;
+          if ((b.replyCount || 0) !== (a.replyCount || 0)) {
+            return (b.replyCount || 0) - (a.replyCount || 0);
+          }
+          return tb - ta;
+        }
+
+        if (sortBy === 'likes') {
+          const likesDiff = (b.likeCount || 0) - (a.likeCount || 0);
+          if (likesDiff !== 0) return likesDiff;
+          return tb - ta;
+        }
+
+        if (sortBy === 'replies') {
+          const repliesDiff = (b.replyCount || 0) - (a.replyCount || 0);
+          if (repliesDiff !== 0) return repliesDiff;
+          return tb - ta;
+        }
+
+        // 'recent': keep pinned posts anchored at top, then newest first
         if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
-        const ta = a.createdAt?.toMillis?.() || Date.now();
-        const tb = b.createdAt?.toMillis?.() || Date.now();
         return tb - ta;
       });
-  }, [posts, searchQuery, feedFilter, membersById]);
+  }, [posts, searchQuery, feedFilter, sortBy, membersById]);
+
+  const activeSortOption =
+    SORT_OPTIONS.find((option) => option.id === sortBy) || SORT_OPTIONS[0];
+
+  const handleOpenComposer = () => {
+    setIsComposerOpen(true);
+    window.setTimeout(() => {
+      composerRef.current?.focus();
+    }, 40);
+  };
+
+  const hasDraft = Boolean(title.trim() || body.trim() || selectedImageFile);
 
   return (
-    <div className="max-w-[1040px] mx-auto py-6 sm:py-8 px-4 space-y-6 font-['Inter']">
-      {/* Header + Search + Board Toggle (mobile/tablet) + Notification Settings */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+    <div className="max-w-[1040px] mx-auto py-6 sm:py-8 px-4 space-y-5 font-['Inter']">
+      {/* Header + Search + New Post + Board Toggle (mobile/tablet) + Notification Settings */}
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
         <div className="flex items-baseline gap-2.5">
           <h1 className="font-['Inter'] text-2xl sm:text-3xl font-medium tracking-tight text-[#edece8] lowercase">
             closer
@@ -745,8 +917,8 @@ export const TeamFeedView: React.FC<TeamFeedViewProps> = ({
           <span className="text-xs text-[#71706b]">Team feed</span>
         </div>
 
-        <div className="flex items-center gap-2 flex-1 sm:max-w-md justify-end">
-          <div className="relative flex-1">
+        <div className="flex flex-wrap sm:flex-nowrap items-center gap-2 flex-1 md:max-w-[540px] justify-end">
+          <div className="relative flex-1 min-w-[160px]">
             <Search className="w-3.5 h-3.5 text-[#71706b] absolute left-3 top-1/2 -translate-y-1/2" />
             <input
               type="text"
@@ -801,163 +973,202 @@ export const TeamFeedView: React.FC<TeamFeedViewProps> = ({
               {notificationsEnabled ? 'Alerts' : 'Muted'}
             </span>
           </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              if (isComposerOpen) {
+                setIsComposerOpen(false);
+              } else {
+                handleOpenComposer();
+              }
+            }}
+            aria-expanded={isComposerOpen}
+            className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-medium transition-colors shrink-0 whitespace-nowrap ${
+              isComposerOpen
+                ? 'bg-[#262624] border border-[#3d3d39] text-white hover:bg-[#2f2f2c]'
+                : 'bg-white hover:bg-[#e0dfd9] text-black border border-transparent'
+            }`}
+            title={isComposerOpen ? 'Close post composer' : 'Write a new post'}
+          >
+            {isComposerOpen ? (
+              <X className="w-3.5 h-3.5" />
+            ) : (
+              <Plus className="w-3.5 h-3.5" />
+            )}
+            <span>{isComposerOpen ? 'Close' : hasDraft ? 'Resume draft' : 'New post'}</span>
+          </button>
         </div>
       </div>
 
       {/* 2-Column Workspace Grid */}
       <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,640px)_340px] gap-6 items-start justify-center">
-        {/* Left Column: Composer + Filter Bar + Feed */}
-        <div className="min-w-0 w-full space-y-5">
-          {/* Social Post Composer (Optional Title + Post Body) */}
-          <form
-            onSubmit={handlePublish}
-            className="bg-[#191918] border border-[#2a2a27] rounded-2xl p-4 focus-within:border-[#42423e] transition-colors space-y-2.5"
-          >
-            <input
-              type="text"
-              value={title}
-              onChange={(e) => setTitle(e.target.value)}
-              maxLength={LIMITS.TITLE_MAX}
-              placeholder="Title (optional)"
-              className="w-full bg-transparent border-b border-[#242422] pb-2 px-1 text-sm font-medium text-white placeholder-[#686761] outline-none focus:border-[#3d3d39] font-['Inter'] transition-colors"
-            />
-
-            <textarea
-              ref={composerRef}
-              value={body}
-              onChange={(e) => setBody(e.target.value)}
-              onKeyDown={handleComposerKeyDown}
-              maxLength={LIMITS.BODY_MAX}
-              placeholder="Share an update, win, or note with the team..."
-              rows={3}
-              disabled={submitting || isUploadingImage}
-              className="w-full bg-transparent text-sm text-white placeholder-[#71706b] outline-none resize-none px-1 pt-0.5 leading-relaxed font-['Inter'] disabled:opacity-60"
-            />
-
-            {imagePreviewUrl && (
-              <div className="relative rounded-xl border border-[#2a2a27] bg-[#141413] p-2">
-                <div className="flex items-center justify-between gap-2 pb-1.5 px-1">
-                  <span className="text-[11px] text-[#8d8c85] truncate">
-                    {selectedImageFile?.name || 'Attached image'}
-                  </span>
-                  <button
-                    type="button"
-                    onClick={handleClearSelectedImage}
-                    disabled={submitting || isUploadingImage}
-                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-[#191918] border border-[#2a2a27] text-[11px] text-[#b5b4ad] hover:text-white hover:border-[#3d3d39] disabled:opacity-50 transition-colors shrink-0"
-                    title="Remove attached image"
-                  >
-                    <X className="w-3 h-3" />
-                    <span>Remove</span>
-                  </button>
-                </div>
-                <div className="overflow-hidden rounded-lg bg-[#0f0f0e] border border-[#222220] flex items-center justify-center">
-                  <img
-                    src={imagePreviewUrl}
-                    alt="Selected post attachment preview"
-                    className="max-h-60 w-auto max-w-full object-contain"
-                  />
-                </div>
-              </div>
-            )}
-
-            {uploadError && (
-              <div
-                role="alert"
-                className="flex items-center justify-between gap-2 rounded-xl border border-[#4a2c2c] bg-[#1e1515] px-3 py-2 text-xs text-[#e5a4a4]"
-              >
-                <div className="flex items-center gap-2 min-w-0">
-                  <AlertCircle className="w-3.5 h-3.5 shrink-0" />
-                  <span className="truncate">{uploadError}</span>
-                </div>
+        {/* Left Column: Collapsible Composer + Filter & Sort Bar + Feed */}
+        <div className="min-w-0 w-full space-y-4">
+          {isComposerOpen && (
+            <form
+              onSubmit={handlePublish}
+              className="bg-[#191918] border border-[#2a2a27] rounded-2xl p-4 focus-within:border-[#42423e] transition-colors space-y-2.5"
+            >
+              <div className="flex items-center justify-between gap-2 pb-1">
+                <span className="text-xs font-medium text-[#edece8]">New post</span>
                 <button
                   type="button"
-                  onClick={() => setUploadError(null)}
-                  className="p-0.5 rounded text-[#c98b8b] hover:text-white shrink-0"
-                  title="Dismiss error"
+                  onClick={() => setIsComposerOpen(false)}
+                  disabled={submitting || isUploadingImage}
+                  className="p-1 rounded-lg text-[#71706b] hover:text-white hover:bg-[#242422] disabled:opacity-50 transition-colors"
+                  title="Close composer"
                 >
                   <X className="w-3.5 h-3.5" />
                 </button>
               </div>
-            )}
 
-            <div className="flex items-center justify-between gap-3 pt-2 border-t border-[#222220] px-1">
-              <div className="flex items-center gap-2 text-[11px] text-[#71706b] min-w-0">
-                <Avatar
-                  name={currentMember.displayName}
-                  photoUrl={currentMember.photoUrl}
-                  size="xs"
-                />
-                <span className="truncate hidden sm:inline">
-                  {currentMember.displayName} · Ctrl/Cmd+Enter
-                </span>
+              <input
+                type="text"
+                value={title}
+                onChange={(e) => setTitle(e.target.value)}
+                maxLength={LIMITS.TITLE_MAX}
+                placeholder="Title (optional)"
+                className="w-full bg-transparent border-b border-[#242422] pb-2 px-1 text-sm font-medium text-white placeholder-[#686761] outline-none focus:border-[#3d3d39] font-['Inter'] transition-colors"
+              />
 
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  accept="image/*"
-                  onChange={handleImageSelect}
-                  disabled={submitting || isUploadingImage}
-                  aria-label="Attach image to post"
-                  className="hidden"
-                />
-                <button
-                  type="button"
-                  onClick={() => fileInputRef.current?.click()}
-                  disabled={submitting || isUploadingImage}
-                  className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg border text-xs transition-colors shrink-0 disabled:opacity-50 ${
-                    selectedImageFile
-                      ? 'bg-[#242422] border-[#3d3d39] text-[#edece8]'
-                      : 'bg-[#141413] border-[#262624] text-[#9c9a92] hover:text-white hover:border-[#363632]'
-                  }`}
-                  title="Attach an image"
+              <textarea
+                ref={composerRef}
+                value={body}
+                onChange={(e) => setBody(e.target.value)}
+                onKeyDown={handleComposerKeyDown}
+                maxLength={LIMITS.BODY_MAX}
+                placeholder="Share an update, win, or note with the team..."
+                rows={3}
+                disabled={submitting || isUploadingImage}
+                className="w-full bg-transparent text-sm text-white placeholder-[#71706b] outline-none resize-none px-1 pt-0.5 leading-relaxed font-['Inter'] disabled:opacity-60"
+              />
+
+              {imagePreviewUrl && (
+                <div className="relative rounded-xl border border-[#2a2a27] bg-[#141413] p-2">
+                  <div className="flex items-center justify-between gap-2 pb-1.5 px-1">
+                    <span className="text-[11px] text-[#8d8c85] truncate">
+                      {selectedImageFile?.name || 'Attached image'}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={handleClearSelectedImage}
+                      disabled={submitting || isUploadingImage}
+                      className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-[#191918] border border-[#2a2a27] text-[11px] text-[#b5b4ad] hover:text-white hover:border-[#3d3d39] disabled:opacity-50 transition-colors shrink-0"
+                      title="Remove attached image"
+                    >
+                      <X className="w-3 h-3" />
+                      <span>Remove</span>
+                    </button>
+                  </div>
+                  <div className="overflow-hidden rounded-lg bg-[#0f0f0e] border border-[#222220] flex items-center justify-center">
+                    <img
+                      src={imagePreviewUrl}
+                      alt="Selected post attachment preview"
+                      className="max-h-60 w-auto max-w-full object-contain"
+                    />
+                  </div>
+                </div>
+              )}
+
+              {uploadError && (
+                <div
+                  role="alert"
+                  className="flex items-center justify-between gap-2 rounded-xl border border-[#4a2c2c] bg-[#1e1515] px-3 py-2 text-xs text-[#e5a4a4]"
                 >
-                  <ImagePlus className="w-3.5 h-3.5" />
-                  <span>{selectedImageFile ? 'Change image' : 'Image'}</span>
-                </button>
-              </div>
+                  <div className="flex items-center gap-2 min-w-0">
+                    <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                    <span className="truncate">{uploadError}</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setUploadError(null)}
+                    className="p-0.5 rounded text-[#c98b8b] hover:text-white shrink-0"
+                    title="Dismiss error"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              )}
 
-              <div className="flex items-center gap-2.5 shrink-0">
-                {body.length > 0 && (
-                  <span className="text-[11px] text-[#71706b] tabular-nums">
-                    {body.length}/{LIMITS.BODY_MAX}
+              <div className="flex items-center justify-between gap-3 pt-2 border-t border-[#222220] px-1">
+                <div className="flex items-center gap-2 text-[11px] text-[#71706b] min-w-0">
+                  <Avatar
+                    name={currentMember.displayName}
+                    photoUrl={currentMember.photoUrl}
+                    size="xs"
+                  />
+                  <span className="truncate hidden sm:inline">
+                    {currentMember.displayName} · Ctrl/Cmd+Enter
                   </span>
-                )}
-                <button
-                  type="submit"
-                  disabled={
-                    submitting ||
-                    isUploadingImage ||
-                    (!body.trim() && !selectedImageFile)
-                  }
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-white hover:bg-[#e0dfd9] active:scale-[0.98] disabled:bg-[#262624] disabled:text-[#5e5d58] text-black text-xs font-medium transition-all shrink-0"
-                  title="Share post"
-                >
-                  {submitting || isUploadingImage ? (
-                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                  ) : (
-                    <ArrowUp className="w-3.5 h-3.5" />
+
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept="image/*"
+                    onChange={handleImageSelect}
+                    disabled={submitting || isUploadingImage}
+                    aria-label="Attach image to post"
+                    className="hidden"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => fileInputRef.current?.click()}
+                    disabled={submitting || isUploadingImage}
+                    className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg border text-xs transition-colors shrink-0 disabled:opacity-50 ${
+                      selectedImageFile
+                        ? 'bg-[#242422] border-[#3d3d39] text-[#edece8]'
+                        : 'bg-[#141413] border-[#262624] text-[#9c9a92] hover:text-white hover:border-[#363632]'
+                    }`}
+                    title="Attach an image"
+                  >
+                    <ImagePlus className="w-3.5 h-3.5" />
+                    <span>{selectedImageFile ? 'Change image' : 'Image'}</span>
+                  </button>
+                </div>
+
+                <div className="flex items-center gap-2.5 shrink-0">
+                  {body.length > 0 && (
+                    <span className="text-[11px] text-[#71706b] tabular-nums">
+                      {body.length}/{LIMITS.BODY_MAX}
+                    </span>
                   )}
-                  <span>
-                    {isUploadingImage
-                      ? 'Uploading...'
-                      : submitting
-                        ? 'Posting...'
-                        : 'Post'}
-                  </span>
-                </button>
+                  <button
+                    type="submit"
+                    disabled={
+                      submitting ||
+                      isUploadingImage ||
+                      (!body.trim() && !selectedImageFile)
+                    }
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-white hover:bg-[#e0dfd9] active:scale-[0.98] disabled:bg-[#262624] disabled:text-[#5e5d58] text-black text-xs font-medium transition-all shrink-0"
+                    title="Share post"
+                  >
+                    {submitting || isUploadingImage ? (
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    ) : (
+                      <ArrowUp className="w-3.5 h-3.5" />
+                    )}
+                    <span>
+                      {isUploadingImage
+                        ? 'Uploading...'
+                        : submitting
+                          ? 'Posting...'
+                          : 'Post'}
+                    </span>
+                  </button>
+                </div>
               </div>
-            </div>
-          </form>
+            </form>
+          )}
 
-          {/* Feed Filter Bar */}
+          {/* Feed Filter Tabs + Side Sort Selector */}
           {!isLoadingPosts && posts.length > 0 && (
-            <div className="flex items-center justify-between gap-2">
+            <div className="flex flex-wrap items-center justify-between gap-2">
               <div className="inline-flex items-center p-0.5 bg-[#191918] border border-[#262624] rounded-xl">
                 <button
                   type="button"
                   onClick={() => setFeedFilter('all')}
-                  className={`px-3 py-1 rounded-lg text-xs transition-colors whitespace-nowrap ${
+                  className={`px-3 py-1 rounded-lg text-xs transition-colors whitespace-nowrap shrink-0 ${
                     feedFilter === 'all'
                       ? 'bg-[#262624] text-white font-medium'
                       : 'text-[#8d8c85] hover:text-[#edece8]'
@@ -968,7 +1179,7 @@ export const TeamFeedView: React.FC<TeamFeedViewProps> = ({
                 <button
                   type="button"
                   onClick={() => setFeedFilter('pinned')}
-                  className={`px-3 py-1 rounded-lg text-xs transition-colors whitespace-nowrap tabular-nums ${
+                  className={`px-3 py-1 rounded-lg text-xs transition-colors whitespace-nowrap shrink-0 tabular-nums ${
                     feedFilter === 'pinned'
                       ? 'bg-[#262624] text-white font-medium'
                       : 'text-[#8d8c85] hover:text-[#edece8]'
@@ -976,11 +1187,76 @@ export const TeamFeedView: React.FC<TeamFeedViewProps> = ({
                 >
                   Pinned{pinnedCount > 0 ? ` (${pinnedCount})` : ''}
                 </button>
+                <button
+                  type="button"
+                  onClick={() => setFeedFilter('images')}
+                  className={`px-3 py-1 rounded-lg text-xs transition-colors whitespace-nowrap shrink-0 tabular-nums ${
+                    feedFilter === 'images'
+                      ? 'bg-[#262624] text-white font-medium'
+                      : 'text-[#8d8c85] hover:text-[#edece8]'
+                  }`}
+                >
+                  Images{imagePostCount > 0 ? ` (${imagePostCount})` : ''}
+                </button>
               </div>
 
-              <span className="text-[11px] text-[#71706b] tabular-nums">
-                {filteredPosts.length} {filteredPosts.length === 1 ? 'post' : 'posts'}
-              </span>
+              <div className="flex items-center gap-2 shrink-0">
+                <div className="relative" ref={sortMenuRef}>
+                  <button
+                    type="button"
+                    onClick={() => setIsSortMenuOpen((prev) => !prev)}
+                    aria-expanded={isSortMenuOpen}
+                    aria-haspopup="listbox"
+                    title={activeSortOption.title}
+                    className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl bg-[#191918] border border-[#262624] hover:border-[#3d3d39] text-xs text-[#edece8] transition-colors whitespace-nowrap shrink-0"
+                  >
+                    <ArrowUpDown className="w-3 h-3 text-[#8d8c85]" />
+                    <span className="text-[#8d8c85]">Sort:</span>
+                    <span className="font-medium text-white">{activeSortOption.label}</span>
+                    <ChevronDown
+                      className={`w-3 h-3 text-[#71706b] transition-transform ${
+                        isSortMenuOpen ? 'rotate-180' : ''
+                      }`}
+                    />
+                  </button>
+
+                  {isSortMenuOpen && (
+                    <div
+                      role="listbox"
+                      aria-label="Sort posts by"
+                      className="absolute right-0 mt-1.5 w-48 z-30 rounded-xl border border-[#2c2c29] bg-[#191918] p-1 shadow-xl"
+                    >
+                      {SORT_OPTIONS.map((option) => (
+                        <button
+                          key={option.id}
+                          type="button"
+                          role="option"
+                          aria-selected={sortBy === option.id}
+                          onClick={() => {
+                            setSortBy(option.id);
+                            setIsSortMenuOpen(false);
+                          }}
+                          title={option.title}
+                          className={`w-full flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg text-xs text-left transition-colors whitespace-nowrap ${
+                            sortBy === option.id
+                              ? 'bg-[#262624] text-white font-medium'
+                              : 'text-[#b5b4ad] hover:bg-[#222220] hover:text-white'
+                          }`}
+                        >
+                          <span>{option.label}</span>
+                          {sortBy === option.id && (
+                            <Check className="w-3 h-3 text-[#edece8] shrink-0" />
+                          )}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                <span className="text-[11px] text-[#71706b] tabular-nums whitespace-nowrap shrink-0">
+                  {filteredPosts.length} {filteredPosts.length === 1 ? 'post' : 'posts'}
+                </span>
+              </div>
             </div>
           )}
 
@@ -995,16 +1271,20 @@ export const TeamFeedView: React.FC<TeamFeedViewProps> = ({
               <p className="text-sm text-[#edece8] font-medium">
                 {feedFilter === 'pinned' && !searchQuery
                   ? 'No pinned posts'
-                  : 'No posts found'}
+                  : feedFilter === 'images' && !searchQuery
+                    ? 'No image posts yet'
+                    : 'No posts found'}
               </p>
               <p className="text-xs text-[#71706b]">
                 {searchQuery
                   ? 'Try clearing your search query.'
                   : feedFilter === 'pinned'
                     ? 'Pin important team updates to keep them at the top.'
-                    : 'Share the first post above with the team.'}
+                    : feedFilter === 'images'
+                      ? 'Posts with attached images will appear here.'
+                      : 'Share the first post with the team.'}
               </p>
-              {(searchQuery || feedFilter === 'pinned') && (
+              {searchQuery || feedFilter !== 'all' ? (
                 <button
                   type="button"
                   onClick={() => {
@@ -1015,6 +1295,17 @@ export const TeamFeedView: React.FC<TeamFeedViewProps> = ({
                 >
                   Show all posts
                 </button>
+              ) : (
+                !isComposerOpen && (
+                  <button
+                    type="button"
+                    onClick={handleOpenComposer}
+                    className="mt-1 inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-white hover:bg-[#e0dfd9] text-black text-xs font-medium transition-colors"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    <span>New post</span>
+                  </button>
+                )
               )}
             </div>
           ) : (
@@ -1025,6 +1316,8 @@ export const TeamFeedView: React.FC<TeamFeedViewProps> = ({
                   post={post}
                   currentMember={currentMember}
                   membersById={membersById}
+                  supervisorIds={supervisorIds}
+                  isSupervisor={isSupervisor}
                   onCopyText={onCopyText}
                   onOpenDm={onOpenDm}
                   onNotify={onNotify}

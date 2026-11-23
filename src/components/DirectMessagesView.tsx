@@ -23,11 +23,13 @@ import {
   getOtherParticipantId,
 } from '../types/team.ts';
 import { Avatar } from './Avatar.tsx';
+import { SupervisorBadge } from './SupervisorBadge.tsx';
 
 interface DirectMessagesViewProps {
   currentMember: TeamMember;
   members: TeamMember[];
   threads: DirectThread[];
+  supervisorIds?: Set<string>;
   selectedUserId: string | null;
   onSelectUser: (uid: string) => void;
   onNotify: (msg: string) => void;
@@ -86,6 +88,7 @@ export const DirectMessagesView: React.FC<DirectMessagesViewProps> = ({
   currentMember,
   members,
   threads,
+  supervisorIds,
   selectedUserId,
   onSelectUser,
   onNotify,
@@ -350,10 +353,15 @@ export const DirectMessagesView: React.FC<DirectMessagesViewProps> = ({
                 />
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center justify-between gap-2">
-                    <span className="text-xs font-medium text-[#edece8] truncate">
-                      {person.displayName}
-                      {isMe ? ' (You)' : ''}
-                    </span>
+                    <div className="flex items-center gap-1.5 min-w-0">
+                      <span className="text-xs font-medium text-[#edece8] truncate">
+                        {person.displayName}
+                        {isMe ? ' (You)' : ''}
+                      </span>
+                      {supervisorIds?.has(person.uid) && (
+                        <SupervisorBadge compact />
+                      )}
+                    </div>
                     {thread?.lastMessageAt && (
                       <span className="text-[10px] text-[#71706b] shrink-0 tabular-nums">
                         {formatShortTime(thread.lastMessageAt)}
@@ -400,6 +408,9 @@ export const DirectMessagesView: React.FC<DirectMessagesViewProps> = ({
                   {activeRecipient.displayName}
                   {isSelfThread ? ' (Notes to self)' : ''}
                 </h2>
+                {supervisorIds?.has(activeRecipient.uid) && (
+                  <SupervisorBadge compact />
+                )}
               </div>
               <p className="text-[11px] text-[#8d8c85] truncate">
                 {activeRecipient.statusText || 'On the phones'}
