@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from "react"
 import { enrichTweet, type EnrichedTweet } from "react-tweet"
 import type { Tweet } from "react-tweet/api"
-import { Pin } from "lucide-react"
+import { Pin, X } from "lucide-react"
 
 import { cn } from "@/lib/utils"
 
@@ -362,10 +362,21 @@ export const MagicTweet = ({
   ...props
 }: MagicTweetProps) => {
   const [imageLoadFailed, setImageLoadFailed] = useState(false)
+  const [isLightboxOpen, setIsLightboxOpen] = useState(false)
 
   useEffect(() => {
     setImageLoadFailed(false)
+    setIsLightboxOpen(false)
   }, [imageUrl])
+
+  useEffect(() => {
+    if (!isLightboxOpen) return
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setIsLightboxOpen(false)
+    }
+    window.addEventListener("keydown", onKeyDown)
+    return () => window.removeEventListener("keydown", onKeyDown)
+  }, [isLightboxOpen])
 
   const safeImageUrl =
     typeof imageUrl === "string" && /^https:\/\/.+/.test(imageUrl.trim())
@@ -405,19 +416,52 @@ export const MagicTweet = ({
       )}
       {hasBodyText && <TweetBody tweet={enrichedTweet} />}
       {safeImageUrl && !imageLoadFailed && (
-        <div className="overflow-hidden rounded-xl border border-[#262624] bg-[#141413]">
-          <img
-            src={safeImageUrl}
-            alt={title ? title : `Image posted by ${enrichedTweet.user.name}`}
-            loading="lazy"
-            referrerPolicy="no-referrer"
-            onError={() => setImageLoadFailed(true)}
-            className="block max-h-[440px] w-full object-contain"
-          />
+        <div className="w-fit max-w-full sm:max-w-[360px] overflow-hidden rounded-xl border border-[#262624] bg-[#141413]">
+          <button
+            type="button"
+            onClick={() => setIsLightboxOpen(true)}
+            className="block cursor-zoom-in focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#edece8]/40"
+            title="Click to view full size"
+          >
+            <img
+              src={safeImageUrl}
+              alt={title ? title : `Image posted by ${enrichedTweet.user.name}`}
+              loading="lazy"
+              referrerPolicy="no-referrer"
+              onError={() => setImageLoadFailed(true)}
+              className="block max-h-52 w-auto max-w-full object-contain"
+            />
+          </button>
         </div>
       )}
       <TweetMedia tweet={enrichedTweet} />
       {footer}
+
+      {isLightboxOpen && safeImageUrl && !imageLoadFailed && (
+        <div
+          className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4"
+          onClick={() => setIsLightboxOpen(false)}
+          role="dialog"
+          aria-modal="true"
+          aria-label="Image preview"
+        >
+          <button
+            type="button"
+            onClick={() => setIsLightboxOpen(false)}
+            className="absolute top-4 right-4 p-2 rounded-xl bg-[#191918] border border-[#2a2a27] text-[#b5b4ad] hover:text-white transition-colors"
+            title="Close preview"
+          >
+            <X className="w-4 h-4" />
+          </button>
+          <img
+            src={safeImageUrl}
+            alt={title ? title : `Image posted by ${enrichedTweet.user.name}`}
+            referrerPolicy="no-referrer"
+            onClick={(e) => e.stopPropagation()}
+            className="max-h-[85vh] max-w-[90vw] rounded-xl border border-[#262624] bg-[#141413] object-contain"
+          />
+        </div>
+      )}
     </article>
   )
 }

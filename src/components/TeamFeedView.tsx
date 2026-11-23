@@ -1045,9 +1045,9 @@ export const TeamFeedView: React.FC<TeamFeedViewProps> = ({
               />
 
               {imagePreviewUrl && (
-                <div className="relative rounded-xl border border-[#2a2a27] bg-[#141413] p-2">
-                  <div className="flex items-center justify-between gap-2 pb-1.5 px-1">
-                    <span className="text-[11px] text-[#8d8c85] truncate">
+                <div className="relative w-fit max-w-full rounded-xl border border-[#2a2a27] bg-[#141413] p-2">
+                  <div className="flex items-center justify-between gap-3 pb-1.5 px-1">
+                    <span className="text-[11px] text-[#8d8c85] truncate max-w-[200px]">
                       {selectedImageFile?.name || 'Attached image'}
                     </span>
                     <button
@@ -1061,11 +1061,11 @@ export const TeamFeedView: React.FC<TeamFeedViewProps> = ({
                       <span>Remove</span>
                     </button>
                   </div>
-                  <div className="overflow-hidden rounded-lg bg-[#0f0f0e] border border-[#222220] flex items-center justify-center">
+                  <div className="overflow-hidden rounded-lg bg-[#0f0f0e] border border-[#222220] inline-flex items-center justify-center">
                     <img
                       src={imagePreviewUrl}
                       alt="Selected post attachment preview"
-                      className="max-h-60 w-auto max-w-full object-contain"
+                      className="max-h-36 w-auto max-w-[280px] object-contain"
                     />
                   </div>
                 </div>
