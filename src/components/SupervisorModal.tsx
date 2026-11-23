@@ -7,7 +7,6 @@ import {
   Lock,
   LogOut,
   PinOff,
-  Eraser,
   AlertCircle,
 } from 'lucide-react';
 import { TeamMember, TeamPost, SupervisorRecord } from '../types/team.ts';
@@ -28,7 +27,6 @@ interface SupervisorModalProps {
   onClaim: (passcode: string) => Promise<void>;
   onLogout: () => Promise<void>;
   onUnpinAllPosts: () => Promise<void>;
-  onClearScratchpad: () => Promise<void>;
 }
 
 export const SupervisorModal: React.FC<SupervisorModalProps> = ({
@@ -46,14 +44,12 @@ export const SupervisorModal: React.FC<SupervisorModalProps> = ({
   onClaim,
   onLogout,
   onUnpinAllPosts,
-  onClearScratchpad,
 }) => {
   const [passcode, setPasscode] = useState('');
   const [confirmPasscode, setConfirmPasscode] = useState('');
   const [showPasscode, setShowPasscode] = useState(false);
   const [localError, setLocalError] = useState<string | null>(null);
   const [confirmUnpinAll, setConfirmUnpinAll] = useState(false);
-  const [confirmClearBoard, setConfirmClearBoard] = useState(false);
 
   useEffect(() => {
     if (!isOpen) {
@@ -62,7 +58,6 @@ export const SupervisorModal: React.FC<SupervisorModalProps> = ({
       setShowPasscode(false);
       setLocalError(null);
       setConfirmUnpinAll(false);
-      setConfirmClearBoard(false);
       return;
     }
     const onKeyDown = (e: KeyboardEvent) => {
@@ -189,83 +184,41 @@ export const SupervisorModal: React.FC<SupervisorModalProps> = ({
 
             <div className="space-y-2">
               <div className="text-[11px] font-medium text-[#8d8c85]">
-                Quick moderation actions
+                Quick moderation action
               </div>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                {!confirmUnpinAll ? (
-                  <button
-                    type="button"
-                    disabled={busy || pinnedCount === 0}
-                    onClick={() => {
-                      setConfirmClearBoard(false);
-                      setConfirmUnpinAll(true);
-                    }}
-                    className="flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl bg-[#141413] hover:bg-[#222220] border border-[#262624] hover:border-[#363632] disabled:opacity-45 text-xs text-[#edece8] transition-colors"
-                  >
-                    <PinOff className="w-3.5 h-3.5 text-[#8d8c85]" />
-                    <span>Unpin all ({pinnedCount})</span>
-                  </button>
-                ) : (
-                  <div className="flex items-center gap-1.5 bg-[#141413] border border-[#3d3d39] rounded-xl p-1">
-                    <button
-                      type="button"
-                      disabled={busy}
-                      onClick={async () => {
-                        await onUnpinAllPosts();
-                        setConfirmUnpinAll(false);
-                      }}
-                      className="flex-1 px-2 py-1 rounded-lg bg-white text-black text-[11px] font-medium hover:bg-[#e0dfd9] disabled:opacity-50"
-                    >
-                      Confirm
-                    </button>
-                    <button
-                      type="button"
-                      disabled={busy}
-                      onClick={() => setConfirmUnpinAll(false)}
-                      className="px-2 py-1 text-[11px] text-[#8d8c85] hover:text-white"
-                    >
-                      Cancel
-                    </button>
-                  </div>
-                )}
-
-                {!confirmClearBoard ? (
+              {!confirmUnpinAll ? (
+                <button
+                  type="button"
+                  disabled={busy || pinnedCount === 0}
+                  onClick={() => setConfirmUnpinAll(true)}
+                  className="w-full flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl bg-[#141413] hover:bg-[#222220] border border-[#262624] hover:border-[#363632] disabled:opacity-45 text-xs text-[#edece8] transition-colors"
+                >
+                  <PinOff className="w-3.5 h-3.5 text-[#8d8c85]" />
+                  <span>Unpin all posts ({pinnedCount})</span>
+                </button>
+              ) : (
+                <div className="flex items-center gap-1.5 bg-[#141413] border border-[#3d3d39] rounded-xl p-1">
                   <button
                     type="button"
                     disabled={busy}
-                    onClick={() => {
+                    onClick={async () => {
+                      await onUnpinAllPosts();
                       setConfirmUnpinAll(false);
-                      setConfirmClearBoard(true);
                     }}
-                    className="flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl bg-[#141413] hover:bg-[#222220] border border-[#262624] hover:border-[#363632] disabled:opacity-45 text-xs text-[#edece8] transition-colors"
+                    className="flex-1 px-2 py-1 rounded-lg bg-white text-black text-[11px] font-medium hover:bg-[#e0dfd9] disabled:opacity-50"
                   >
-                    <Eraser className="w-3.5 h-3.5 text-[#8d8c85]" />
-                    <span>Clear scratchpad</span>
+                    Confirm unpin all
                   </button>
-                ) : (
-                  <div className="flex items-center gap-1.5 bg-[#141413] border border-[#3d3d39] rounded-xl p-1">
-                    <button
-                      type="button"
-                      disabled={busy}
-                      onClick={async () => {
-                        await onClearScratchpad();
-                        setConfirmClearBoard(false);
-                      }}
-                      className="flex-1 px-2 py-1 rounded-lg bg-white text-black text-[11px] font-medium hover:bg-[#e0dfd9] disabled:opacity-50"
-                    >
-                      Confirm
-                    </button>
-                    <button
-                      type="button"
-                      disabled={busy}
-                      onClick={() => setConfirmClearBoard(false)}
-                      className="px-2 py-1 text-[11px] text-[#8d8c85] hover:text-white"
-                    >
-                      Cancel
-                    </button>
-                  </div>
-                )}
-              </div>
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => setConfirmUnpinAll(false)}
+                    className="px-2.5 py-1 text-[11px] text-[#8d8c85] hover:text-white"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              )}
             </div>
 
             {activeSupervisors.length > 0 && (

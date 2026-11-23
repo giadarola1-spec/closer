@@ -4,7 +4,6 @@ import {
   collection,
   doc,
   getDoc,
-  getDocs,
   setDoc,
   updateDoc,
   deleteDoc,
@@ -43,6 +42,11 @@ import { SupervisorModal } from './components/SupervisorModal.tsx';
 import { PostNotificationBanner } from './components/PostNotificationBanner.tsx';
 import { Toast } from './components/Toast.tsx';
 import { sanitizePhotoUrl } from './utils/image.ts';
+import {
+  isValidSyncKey,
+  deriveSupervisorSyncKey,
+  constantTimeHexEquals,
+} from './utils/supervisor.ts';
 import {
   DEFAULT_NOTIFICATION_PREFS,
   isValidTone,
@@ -465,18 +469,37 @@ export default function App() {
   const refreshSupervisorStatus = async () => {
     try {
       const res = await fetch('/api/supervisor/status');
-      if (!res.ok) throw new Error('Unable to check supervisor status');
-      const data = await res.json();
-      if (
-        data.mode === 'env' ||
-        data.mode === 'claimed' ||
-        data.mode === 'unconfigured'
-      ) {
-        setSupervisorStatusMode(data.mode);
+      const contentType = res.headers.get('content-type') || '';
+      if (res.ok && contentType.includes('application/json')) {
+        const data = await res.json();
+        if (
+          data.mode === 'env' ||
+          data.mode === 'claimed' ||
+          data.mode === 'unconfigured'
+        ) {
+          setSupervisorStatusMode(data.mode);
+          return;
+        }
       }
     } catch {
-      setSupervisorStatusMode((prev) => (prev === 'loading' ? 'env' : prev));
+      // Backend API unavailable (e.g., static shared hosting); fall through to Firestore check
     }
+
+    if (user?.email === 'giadarola1@gmail.com') {
+      try {
+        const configSnap = await getDoc(doc(db, 'app_config', 'supervisor'));
+        setSupervisorStatusMode(
+          configSnap.exists() && isValidSyncKey(configSnap.data()?.syncKey)
+            ? 'claimed'
+            : 'unconfigured'
+        );
+        return;
+      } catch {
+        // Fall through cleanly
+      }
+    }
+
+    setSupervisorStatusMode('claimed');
   };
 
   useEffect(() => {
@@ -493,6 +516,10 @@ export default function App() {
 
   const activateSupervisorInFirestore = async (syncKey: string) => {
     if (!user || !currentMember) return;
+    if (!isValidSyncKey(syncKey)) {
+      throw new Error('Supervisor verification key is missing or invalid.');
+    }
+
     const isAdminEmail = user.email === 'giadarola1@gmail.com';
     const supRef = doc(db, 'supervisors', user.uid);
     const supSnap = await getDoc(supRef);
@@ -538,23 +565,58 @@ export default function App() {
     setSupervisorBusy(true);
     setSupervisorError(null);
     try {
-      const res = await fetch('/api/supervisor/claim', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ uid: user.uid, passcode }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        if (res.status === 409) {
-          await refreshSupervisorStatus();
+      let resolvedSyncKey: string | null = null;
+      let apiHandled = false;
+
+      try {
+        const res = await fetch('/api/supervisor/claim', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ uid: user.uid, passcode }),
+        });
+        const contentType = res.headers.get('content-type') || '';
+        if (contentType.includes('application/json')) {
+          apiHandled = true;
+          const data = await res.json();
+          if (!res.ok) {
+            if (res.status === 409) {
+              await refreshSupervisorStatus();
+            }
+            setSupervisorError(data.error || 'Could not configure supervisor passcode.');
+            return;
+          }
+          if (!isValidSyncKey(data.syncKey)) {
+            setSupervisorError('Server returned an incomplete verification key.');
+            return;
+          }
+          setSupervisorToken(typeof data.token === 'string' ? data.token : null);
+          resolvedSyncKey = data.syncKey;
         }
-        setSupervisorError(data.error || 'Could not configure supervisor passcode.');
+      } catch {
+        // Static deployment without Express API; verify via Firestore fallback
+      }
+
+      if (!apiHandled) {
+        if (user.email !== 'giadarola1@gmail.com') {
+          setSupervisorError('An admin must configure Supervisor first.');
+          return;
+        }
+        const existingConfig = await getDoc(doc(db, 'app_config', 'supervisor'));
+        if (existingConfig.exists() && isValidSyncKey(existingConfig.data()?.syncKey)) {
+          setSupervisorStatusMode('claimed');
+          setSupervisorError('Supervisor passcode is already configured. Please sign in.');
+          return;
+        }
+        resolvedSyncKey = await deriveSupervisorSyncKey(passcode);
+      }
+
+      if (!isValidSyncKey(resolvedSyncKey)) {
+        setSupervisorError('Could not derive a valid verification key.');
         return;
       }
 
-      setSupervisorToken(data.token || null);
       setSupervisorStatusMode('claimed');
-      await activateSupervisorInFirestore(data.syncKey);
+      await activateSupervisorInFirestore(resolvedSyncKey);
       setIsSupervisorModalOpen(false);
       showToast('Supervisor mode activated');
     } catch (error) {
@@ -575,25 +637,64 @@ export default function App() {
     setSupervisorBusy(true);
     setSupervisorError(null);
     try {
-      const res = await fetch('/api/supervisor/verify', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ uid: user.uid, passcode }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        setSupervisorError(data.error || 'Incorrect supervisor password.');
+      let resolvedSyncKey: string | null = null;
+      let apiHandled = false;
+
+      try {
+        const res = await fetch('/api/supervisor/verify', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ uid: user.uid, passcode }),
+        });
+        const contentType = res.headers.get('content-type') || '';
+        if (contentType.includes('application/json')) {
+          apiHandled = true;
+          const data = await res.json();
+          if (!res.ok) {
+            setSupervisorError(data.error || 'Incorrect supervisor password.');
+            return;
+          }
+          if (!isValidSyncKey(data.syncKey)) {
+            setSupervisorError('Server returned an incomplete verification key.');
+            return;
+          }
+          setSupervisorToken(typeof data.token === 'string' ? data.token : null);
+          resolvedSyncKey = data.syncKey;
+        }
+      } catch {
+        // Static deployment without Express API; verify via Firestore fallback
+      }
+
+      if (!apiHandled) {
+        const candidateSyncKey = await deriveSupervisorSyncKey(passcode);
+        if (user.email === 'giadarola1@gmail.com') {
+          const configSnap = await getDoc(doc(db, 'app_config', 'supervisor'));
+          const storedKey = configSnap.data()?.syncKey;
+          if (!configSnap.exists() || !isValidSyncKey(storedKey)) {
+            setSupervisorStatusMode('unconfigured');
+            setSupervisorError('Please set the supervisor passcode first.');
+            return;
+          }
+          if (!constantTimeHexEquals(candidateSyncKey, storedKey)) {
+            setSupervisorError('Incorrect supervisor password.');
+            return;
+          }
+        }
+        resolvedSyncKey = candidateSyncKey;
+      }
+
+      if (!isValidSyncKey(resolvedSyncKey)) {
+        setSupervisorError('Could not derive a valid verification key.');
         return;
       }
 
-      setSupervisorToken(data.token || null);
-      await activateSupervisorInFirestore(data.syncKey);
+      await activateSupervisorInFirestore(resolvedSyncKey);
       setIsSupervisorModalOpen(false);
       showToast('Supervisor mode activated');
     } catch (error) {
       const msg =
         error instanceof Error && error.message.toLowerCase().includes('permission')
-          ? 'An admin must activate Supervisor once before other teammates can claim it.'
+          ? 'Incorrect supervisor password or admin has not activated Supervisor yet.'
           : error instanceof Error
             ? error.message
             : 'Unable to verify supervisor password.';
@@ -649,38 +750,6 @@ export default function App() {
       );
     } catch (error) {
       handleFirestoreError(error, OperationType.UPDATE, 'posts');
-    } finally {
-      setSupervisorBusy(false);
-    }
-  };
-
-  const handleClearScratchpad = async () => {
-    if (!isSupervisor || supervisorBusy) return;
-    setSupervisorBusy(true);
-    try {
-      const strokesSnap = await getDocs(
-        query(
-          collection(db, 'drawboard_strokes'),
-          where('teamId', 'in', [...ACCEPTED_TEAM_IDS])
-        )
-      );
-      if (strokesSnap.empty) {
-        showToast('Scratchpad is already clear');
-        return;
-      }
-
-      const docs = strokesSnap.docs;
-      for (let i = 0; i < docs.length; i += 450) {
-        const chunk = docs.slice(i, i + 450);
-        const batch = writeBatch(db);
-        for (const d of chunk) {
-          batch.delete(d.ref);
-        }
-        await batch.commit();
-      }
-      showToast('Scratchpad cleared');
-    } catch (error) {
-      handleFirestoreError(error, OperationType.DELETE, 'drawboard_strokes');
     } finally {
       setSupervisorBusy(false);
     }
@@ -988,7 +1057,6 @@ export default function App() {
         onClaim={handleSupervisorClaim}
         onLogout={handleSupervisorLogout}
         onUnpinAllPosts={handleUnpinAllPosts}
-        onClearScratchpad={handleClearScratchpad}
       />
 
       <Toast message={toastMessage} />

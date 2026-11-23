@@ -25,7 +25,6 @@ import {
   Send,
   Bell,
   BellOff,
-  PenTool,
   ImagePlus,
   Loader2,
   AlertCircle,
@@ -44,7 +43,6 @@ import {
   PostComment,
 } from '../types/team.ts';
 import { Avatar } from './Avatar.tsx';
-import { TeamScratchpad } from './TeamScratchpad.tsx';
 import { SupervisorBadge } from './SupervisorBadge.tsx';
 import { TweetCard, TweetSkeleton } from '@/components/ui/tweet-card';
 import {
@@ -673,7 +671,6 @@ export const TeamFeedView: React.FC<TeamFeedViewProps> = ({
   const [feedFilter, setFeedFilter] = useState<FeedFilterMode>('all');
   const [sortBy, setSortBy] = useState<FeedSortMode>('recent');
   const [isSortMenuOpen, setIsSortMenuOpen] = useState(false);
-  const [isBoardOpen, setIsBoardOpen] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const sortMenuRef = useRef<HTMLDivElement | null>(null);
@@ -907,8 +904,8 @@ export const TeamFeedView: React.FC<TeamFeedViewProps> = ({
   const hasDraft = Boolean(title.trim() || body.trim() || selectedImageFile);
 
   return (
-    <div className="max-w-[1040px] mx-auto py-6 sm:py-8 px-4 space-y-5 font-['Inter']">
-      {/* Header + Search + New Post + Board Toggle (mobile/tablet) + Notification Settings */}
+    <div className="max-w-[680px] mx-auto py-6 sm:py-8 px-4 space-y-5 font-['Inter']">
+      {/* Header + Search + Alerts + New Post */}
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
         <div className="flex items-baseline gap-2.5">
           <h1 className="font-['Inter'] text-2xl sm:text-3xl font-medium tracking-tight text-[#edece8] lowercase">
@@ -917,7 +914,7 @@ export const TeamFeedView: React.FC<TeamFeedViewProps> = ({
           <span className="text-xs text-[#71706b]">Team feed</span>
         </div>
 
-        <div className="flex flex-wrap sm:flex-nowrap items-center gap-2 flex-1 md:max-w-[540px] justify-end">
+        <div className="flex flex-wrap sm:flex-nowrap items-center gap-2 flex-1 md:max-w-[440px] justify-end">
           <div className="relative flex-1 min-w-[160px]">
             <Search className="w-3.5 h-3.5 text-[#71706b] absolute left-3 top-1/2 -translate-y-1/2" />
             <input
@@ -938,21 +935,6 @@ export const TeamFeedView: React.FC<TeamFeedViewProps> = ({
               </button>
             )}
           </div>
-
-          <button
-            type="button"
-            onClick={() => setIsBoardOpen(!isBoardOpen)}
-            aria-expanded={isBoardOpen}
-            className={`xl:hidden flex items-center gap-1.5 px-3 py-1.5 rounded-xl border text-xs transition-colors shrink-0 whitespace-nowrap ${
-              isBoardOpen
-                ? 'bg-[#262626] border-[#3d3d39] text-white'
-                : 'bg-[#191918] border-[#262624] text-[#edece8] hover:border-[#3d3d39]'
-            }`}
-            title="Toggle Team Scratchpad"
-          >
-            <PenTool className="w-3.5 h-3.5" />
-            <span>Board</span>
-          </button>
 
           <button
             type="button"
@@ -1001,15 +983,13 @@ export const TeamFeedView: React.FC<TeamFeedViewProps> = ({
         </div>
       </div>
 
-      {/* 2-Column Workspace Grid */}
-      <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,640px)_340px] gap-6 items-start justify-center">
-        {/* Left Column: Collapsible Composer + Filter & Sort Bar + Feed */}
-        <div className="min-w-0 w-full space-y-4">
-          {isComposerOpen && (
-            <form
-              onSubmit={handlePublish}
-              className="bg-[#191918] border border-[#2a2a27] rounded-2xl p-4 focus-within:border-[#42423e] transition-colors space-y-2.5"
-            >
+      {/* Main Feed Workspace */}
+      <div className="min-w-0 w-full space-y-4">
+        {isComposerOpen && (
+          <form
+            onSubmit={handlePublish}
+            className="w-full bg-[#191918] border border-[#2a2a27] rounded-2xl p-4 focus-within:border-[#42423e] transition-colors space-y-2.5"
+          >
               <div className="flex items-center justify-between gap-2 pb-1">
                 <span className="text-xs font-medium text-[#edece8]">New post</span>
                 <button
@@ -1260,7 +1240,7 @@ export const TeamFeedView: React.FC<TeamFeedViewProps> = ({
             </div>
           )}
 
-          {/* Feed Stream */}
+          {/* Single-Column Feed Stream */}
           {isLoadingPosts ? (
             <div className="space-y-3 pb-10">
               <TweetSkeleton />
@@ -1325,20 +1305,6 @@ export const TeamFeedView: React.FC<TeamFeedViewProps> = ({
               ))}
             </div>
           )}
-        </div>
-
-        {/* Right Column: Sticky Team Scratchpad Drawboard */}
-        <aside
-          className={`order-first xl:order-last w-full xl:w-[340px] xl:sticky xl:top-8 ${
-            isBoardOpen ? 'block' : 'hidden xl:block'
-          }`}
-        >
-          <TeamScratchpad
-            currentMember={currentMember}
-            membersById={membersById}
-            onNotify={onNotify}
-          />
-        </aside>
       </div>
     </div>
   );
