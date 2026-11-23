@@ -50,6 +50,32 @@ service cloud.firestore {
         && isValidId(pair[1]);
     }
 
+    function isValidStrokePoint(pt) {
+      return pt is map
+        && pt.keys().hasAll(['x', 'y'])
+        && pt.keys().hasOnly(['x', 'y'])
+        && (pt.x is float || pt.x is int)
+        && pt.x >= 0
+        && pt.x <= 1
+        && (pt.y is float || pt.y is int)
+        && pt.y >= 0
+        && pt.y <= 1;
+    }
+
+    function isValidDrawboardColor(color) {
+      return color in [
+        '#e5e5e5',
+        '#9ca3af',
+        '#d97706',
+        '#eab308',
+        '#10b981',
+        '#06b6d4',
+        '#3b82f6',
+        '#f43f5e',
+        '#191919'
+      ];
+    }
+
     // --- Validation Blueprints ---
     function isValidMember(data) {
       return data.keys().hasAll(['uid', 'teamId', 'displayName', 'focus', 'statusText', 'createdAt', 'updatedAt'])
@@ -173,6 +199,23 @@ service cloud.firestore {
         && data.senderName is string && data.senderName.size() >= 1 && data.senderName.size() <= 60
         && isValidId(data.recipientId)
         && data.body is string && data.body.size() >= 1 && data.body.size() <= 4000
+        && data.createdAt is timestamp;
+    }
+
+    function isValidDrawboardStroke(data) {
+      return data.keys().hasAll(['teamId', 'points', 'color', 'width', 'userId', 'userName', 'createdAt'])
+        && data.keys().hasOnly(['teamId', 'points', 'color', 'width', 'userId', 'userName', 'createdAt'])
+        && isValidTeamId(data.teamId)
+        && data.points is list
+        && data.points.size() >= 1
+        && data.points.size() <= 500
+        && isValidStrokePoint(data.points[0])
+        && isValidDrawboardColor(data.color)
+        && (data.width is int || data.width is float)
+        && data.width >= 1
+        && data.width <= 24
+        && isValidId(data.userId)
+        && data.userName is string && data.userName.size() >= 1 && data.userName.size() <= 60
         && data.createdAt is timestamp;
     }
 
@@ -421,6 +464,29 @@ service cloud.firestore {
           && isValidId(messageId)
           && existing().senderId == request.auth.uid;
       }
+    }
+
+    // Collaborative Team Scratchpad drawboard strokes
+    match /drawboard_strokes/{strokeId} {
+      allow get: if isVerified()
+        && isValidId(strokeId)
+        && resource != null
+        && isValidTeamId(existing().teamId);
+      allow list: if isVerified() && isValidTeamId(resource.data.teamId);
+      allow create: if isVerified()
+        && isValidId(strokeId)
+        && isValidDrawboardStroke(incoming())
+        && incoming().userId == request.auth.uid
+        && incoming().createdAt == request.time
+        && isTeamMember();
+      allow update: if false;
+      allow delete: if isVerified()
+        && isValidId(strokeId)
+        && (
+          isTeamMember()
+          || isAdmin()
+          || (resource != null && existing().userId == request.auth.uid)
+        );
     }
   }
 }

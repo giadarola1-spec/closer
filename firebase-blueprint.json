@@ -357,6 +357,55 @@
         "body",
         "createdAt"
       ]
+    },
+    "DrawboardStroke": {
+      "title": "DrawboardStroke",
+      "description": "Single normalized collaborative scratchpad stroke drawn by a closer.",
+      "type": "object",
+      "properties": {
+        "teamId": {
+          "type": "string",
+          "enum": ["gtt-closers", "gtt-closers-9"]
+        },
+        "points": {
+          "type": "array",
+          "description": "Bounded array (1-500) of normalized { x, y } coordinates between 0 and 1."
+        },
+        "color": {
+          "type": "string",
+          "enum": [
+            "#e5e5e5",
+            "#9ca3af",
+            "#d97706",
+            "#eab308",
+            "#10b981",
+            "#06b6d4",
+            "#3b82f6",
+            "#f43f5e",
+            "#191919"
+          ]
+        },
+        "width": {
+          "type": "number",
+          "description": "Brush stroke width in pixels (1-24)."
+        },
+        "userId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "userName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 60
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["teamId", "points", "color", "width", "userId", "userName", "createdAt"]
     }
   },
   "firestore": {
@@ -387,6 +436,10 @@
     "/dms/{dmId}/messages/{messageId}": {
       "schema": { "$ref": "#/entities/DirectMessage" },
       "description": "Private 1-on-1 messages inside a DM thread."
+    },
+    "/drawboard_strokes/{strokeId}": {
+      "schema": { "$ref": "#/entities/DrawboardStroke" },
+      "description": "Collaborative real-time Team Scratchpad strokes ordered by createdAt."
     }
   }
 }

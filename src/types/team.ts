@@ -13,6 +13,7 @@ export const LIMITS = {
   COMMENT_MAX: 2000,
   DM_PREVIEW_MAX: 500,
   DM_BODY_MAX: 4000,
+  DRAWBOARD_POINTS_MAX: 500,
 } as const;
 
 export type PostCategory = 'post' | 'message' | 'idea' | 'mql' | 'sql' | 'opening';
@@ -122,5 +123,40 @@ export interface PostAlert {
   title: string;
   body: string;
 }
+
+export interface DrawboardPoint {
+  x: number;
+  y: number;
+}
+
+export const DRAWBOARD_BG = '#191919' as const;
+
+export const DRAWBOARD_SWATCHES = [
+  { hex: '#e5e5e5', label: 'Off-white' },
+  { hex: '#9ca3af', label: 'Cool Gray' },
+  { hex: '#d97706', label: 'Soft Amber' },
+  { hex: '#eab308', label: 'Warm Gold' },
+  { hex: '#10b981', label: 'Muted Emerald' },
+  { hex: '#06b6d4', label: 'Muted Cyan' },
+  { hex: '#3b82f6', label: 'Soft Blue' },
+  { hex: '#f43f5e', label: 'Soft Coral' },
+] as const;
+
+export const DRAWBOARD_SIZES = [1, 2, 4, 8] as const;
+export type DrawboardSize = (typeof DRAWBOARD_SIZES)[number];
+
+export type DrawboardColor = (typeof DRAWBOARD_SWATCHES)[number]['hex'] | typeof DRAWBOARD_BG;
+
+export interface DrawboardStroke {
+  id: string;
+  teamId: (typeof ACCEPTED_TEAM_IDS)[number];
+  points: DrawboardPoint[];
+  color: DrawboardColor;
+  width: number;
+  userId: string;
+  userName: string;
+  createdAt: any;
+}
+
 
 

@@ -24,6 +24,7 @@ import {
   Send,
   Bell,
   BellOff,
+  PenTool,
 } from 'lucide-react';
 import { db, OperationType, handleFirestoreError } from '../firebase.ts';
 import {
@@ -35,6 +36,7 @@ import {
   PostComment,
 } from '../types/team.ts';
 import { Avatar } from './Avatar.tsx';
+import { TeamScratchpad } from './TeamScratchpad.tsx';
 
 interface TeamFeedViewProps {
   currentMember: TeamMember;
@@ -423,6 +425,7 @@ export const TeamFeedView: React.FC<TeamFeedViewProps> = ({
   const [body, setBody] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
+  const [isBoardOpen, setIsBoardOpen] = useState(false);
 
   const membersById = useMemo(() => {
     const map: Record<string, TeamMember> = {};
@@ -498,14 +501,14 @@ export const TeamFeedView: React.FC<TeamFeedViewProps> = ({
   }, [posts, searchQuery, membersById]);
 
   return (
-    <div className="max-w-2xl mx-auto py-8 px-4 space-y-6 font-['Inter']">
-      {/* Header + Search + Notification Settings */}
+    <div className="max-w-[1040px] mx-auto py-8 px-4 space-y-6 font-['Inter']">
+      {/* Header + Search + Board Toggle (mobile/tablet) + Notification Settings */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <h1 className="font-['Inter'] text-2xl sm:text-3xl font-medium tracking-tight text-[#edece8] lowercase">
           closer
         </h1>
 
-        <div className="flex items-center gap-2 flex-1 sm:max-w-sm justify-end">
+        <div className="flex items-center gap-2 flex-1 sm:max-w-md justify-end">
           <div className="relative flex-1">
             <Search className="w-3.5 h-3.5 text-[#71706b] absolute left-3 top-1/2 -translate-y-1/2" />
             <input
@@ -524,6 +527,21 @@ export const TeamFeedView: React.FC<TeamFeedViewProps> = ({
               </button>
             )}
           </div>
+
+          <button
+            type="button"
+            onClick={() => setIsBoardOpen(!isBoardOpen)}
+            aria-expanded={isBoardOpen}
+            className={`xl:hidden flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl border text-xs transition-colors shrink-0 ${
+              isBoardOpen
+                ? 'bg-[#262626] border-[#3d3d39] text-white'
+                : 'bg-[#191918] border-[#2a2a27] text-[#edece8] hover:border-[#3d3d39]'
+            }`}
+            title="Toggle Team Scratchpad"
+          >
+            <PenTool className="w-3.5 h-3.5" />
+            <span>Board</span>
+          </button>
 
           <button
             type="button"
@@ -547,80 +565,99 @@ export const TeamFeedView: React.FC<TeamFeedViewProps> = ({
         </div>
       </div>
 
-      {/* Social Post Composer (Optional Title + Post Body) */}
-      <form
-        onSubmit={handlePublish}
-        className="bg-[#1f1f1e] border border-[#2f2f2c] rounded-3xl p-4 shadow-lg focus-within:border-[#4d4d48] transition-colors space-y-2.5"
-      >
-        <input
-          type="text"
-          value={title}
-          onChange={(e) => setTitle(e.target.value)}
-          maxLength={LIMITS.TITLE_MAX}
-          placeholder="Title (optional)"
-          className="w-full bg-transparent border-b border-[#2a2a27] pb-2 px-1 text-sm font-medium text-white placeholder-[#686761] outline-none focus:border-[#3d3d39] font-['Inter']"
-        />
-
-        <textarea
-          ref={composerRef}
-          value={body}
-          onChange={(e) => setBody(e.target.value)}
-          onKeyDown={handleComposerKeyDown}
-          maxLength={LIMITS.BODY_MAX}
-          placeholder="What's happening?"
-          rows={3}
-          className="w-full bg-transparent text-sm text-white placeholder-[#71706b] outline-none resize-none px-1 pt-0.5 leading-relaxed font-['Inter']"
-        />
-
-        <div className="flex items-center justify-between pt-2 border-t border-[#262624] px-1">
-          <div className="flex items-center gap-2 text-[11px] text-[#71706b]">
-            <Avatar
-              name={currentMember.displayName}
-              photoUrl={currentMember.photoUrl}
-              size="xs"
-            />
-            <span>Posting as {currentMember.displayName} · Ctrl/Cmd+Enter</span>
-          </div>
-          <button
-            type="submit"
-            disabled={submitting || !body.trim()}
-            className="w-8 h-8 rounded-full bg-white hover:bg-[#e0dfd9] disabled:bg-[#292926] disabled:text-[#555550] text-black flex items-center justify-center transition-colors shrink-0 shadow"
-            title="Post"
+      {/* 2-Column Workspace Grid */}
+      <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,640px)_340px] gap-6 items-start justify-center">
+        {/* Left Column: Composer + Feed */}
+        <div className="min-w-0 w-full space-y-6">
+          {/* Social Post Composer (Optional Title + Post Body) */}
+          <form
+            onSubmit={handlePublish}
+            className="bg-[#1f1f1e] border border-[#2f2f2c] rounded-3xl p-4 shadow-lg focus-within:border-[#4d4d48] transition-colors space-y-2.5"
           >
-            <ArrowUp className="w-4 h-4" />
-          </button>
-        </div>
-      </form>
-
-      {/* Feed Stream */}
-      {isLoadingPosts ? (
-        <div className="py-12 text-center text-xs text-[#71706b]">
-          Loading feed...
-        </div>
-      ) : filteredPosts.length === 0 ? (
-        <div className="bg-[#191918] border border-[#262624] rounded-2xl p-8 text-center space-y-2">
-          <p className="text-sm text-[#edece8] font-medium">No posts yet</p>
-          <p className="text-xs text-[#71706b]">
-            {searchQuery
-              ? 'Try clearing your search filter.'
-              : 'Share the first post above with the team.'}
-          </p>
-        </div>
-      ) : (
-        <div className="space-y-3 pb-10">
-          {filteredPosts.map((post) => (
-            <PostCard
-              key={post.id}
-              post={post}
-              currentMember={currentMember}
-              membersById={membersById}
-              onCopyText={onCopyText}
-              onOpenDm={onOpenDm}
-              onNotify={onNotify}
+            <input
+              type="text"
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+              maxLength={LIMITS.TITLE_MAX}
+              placeholder="Title (optional)"
+              className="w-full bg-transparent border-b border-[#2a2a27] pb-2 px-1 text-sm font-medium text-white placeholder-[#686761] outline-none focus:border-[#3d3d39] font-['Inter']"
             />
-          ))}
+
+            <textarea
+              ref={composerRef}
+              value={body}
+              onChange={(e) => setBody(e.target.value)}
+              onKeyDown={handleComposerKeyDown}
+              maxLength={LIMITS.BODY_MAX}
+              placeholder="What's happening?"
+              rows={3}
+              className="w-full bg-transparent text-sm text-white placeholder-[#71706b] outline-none resize-none px-1 pt-0.5 leading-relaxed font-['Inter']"
+            />
+
+            <div className="flex items-center justify-between pt-2 border-t border-[#262624] px-1">
+              <div className="flex items-center gap-2 text-[11px] text-[#71706b]">
+                <Avatar
+                  name={currentMember.displayName}
+                  photoUrl={currentMember.photoUrl}
+                  size="xs"
+                />
+                <span>Posting as {currentMember.displayName} · Ctrl/Cmd+Enter</span>
+              </div>
+              <button
+                type="submit"
+                disabled={submitting || !body.trim()}
+                className="w-8 h-8 rounded-full bg-white hover:bg-[#e0dfd9] disabled:bg-[#292926] disabled:text-[#555550] text-black flex items-center justify-center transition-colors shrink-0 shadow"
+                title="Post"
+              >
+                <ArrowUp className="w-4 h-4" />
+              </button>
+            </div>
+          </form>
+
+          {/* Feed Stream */}
+          {isLoadingPosts ? (
+            <div className="py-12 text-center text-xs text-[#71706b]">
+              Loading feed...
+            </div>
+          ) : filteredPosts.length === 0 ? (
+            <div className="bg-[#191918] border border-[#262624] rounded-2xl p-8 text-center space-y-2">
+              <p className="text-sm text-[#edece8] font-medium">No posts yet</p>
+              <p className="text-xs text-[#71706b]">
+                {searchQuery
+                  ? 'Try clearing your search filter.'
+                  : 'Share the first post above with the team.'}
+              </p>
+            </div>
+          ) : (
+            <div className="space-y-3 pb-10">
+              {filteredPosts.map((post) => (
+                <PostCard
+                  key={post.id}
+                  post={post}
+                  currentMember={currentMember}
+                  membersById={membersById}
+                  onCopyText={onCopyText}
+                  onOpenDm={onOpenDm}
+                  onNotify={onNotify}
+                />
+              ))}
+            </div>
+          )}
         </div>
-      )}
+
+        {/* Right Column: Sticky Team Scratchpad Drawboard */}
+        <aside
+          className={`order-first xl:order-last w-full xl:w-[340px] xl:sticky xl:top-8 ${
+            isBoardOpen ? 'block' : 'hidden xl:block'
+          }`}
+        >
+          <TeamScratchpad
+            currentMember={currentMember}
+            membersById={membersById}
+            onNotify={onNotify}
+          />
+        </aside>
+      </div>
     </div>
   );
 };
