@@ -6,6 +6,7 @@ import {
   doc,
   query,
   where,
+  limit,
   onSnapshot,
   writeBatch,
   serverTimestamp,
@@ -121,11 +122,12 @@ export const TeamScratchpad: React.FC<TeamScratchpadProps> = ({
   const localOrderRef = useRef<Record<string, number>>({});
   const localSeqRef = useRef(0);
 
-  // Subscribe to team drawboard_strokes (filtered by teamId to match security rules cleanly, sorted client-side)
+  // Subscribe to team drawboard_strokes (capped at 300 strokes to keep read usage minimal)
   useEffect(() => {
     const q = query(
       collection(db, 'drawboard_strokes'),
-      where('teamId', 'in', [...ACCEPTED_TEAM_IDS])
+      where('teamId', 'in', [...ACCEPTED_TEAM_IDS]),
+      limit(300)
     );
 
     const unsub = onSnapshot(
@@ -271,7 +273,7 @@ export const TeamScratchpad: React.FC<TeamScratchpadProps> = ({
     if (prev) {
       const dx = point.x - prev.x;
       const dy = point.y - prev.y;
-      if (dx * dx + dy * dy < 0.000009) {
+      if (dx * dx + dy * dy < 0.000025) {
         return;
       }
     }

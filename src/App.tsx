@@ -11,7 +11,7 @@ import {
   onSnapshot,
   serverTimestamp,
 } from 'firebase/firestore';
-import { Menu, Bell, BellOff } from 'lucide-react';
+import { Menu, Bell, BellOff, Truck } from 'lucide-react';
 import {
   auth,
   db,
@@ -65,6 +65,7 @@ export default function App() {
   const [activeChannel, setActiveChannel] = useState<SidebarChannel>('feed');
   const [selectedDmUserId, setSelectedDmUserId] = useState<string | null>(null);
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
+  const [isMobileNavOpen, setIsMobileNavOpen] = useState(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
   const [notificationPrefs, setNotificationPrefs] = useState<NotificationPreferences>(
@@ -352,13 +353,17 @@ export default function App() {
                 );
                 const authorName = authorProfile?.displayName || newPost.authorName;
 
+                const alertSnippet =
+                  newPost.body?.trim() ||
+                  (newPost.imageUrl ? 'Shared an image' : 'New post');
+
                 pushPostAlert({
                   id: `${newPost.id}_${Date.now()}`,
                   postId: newPost.id,
                   authorName,
                   authorPhotoUrl: authorProfile?.photoUrl,
                   title: newPost.title,
-                  body: newPost.body,
+                  body: alertSnippet,
                 });
 
                 if (activePrefs.postSoundEnabled) {
@@ -369,7 +374,7 @@ export default function App() {
                   const notifTitle = newPost.title
                     ? `${authorName}: ${newPost.title}`
                     : `${authorName} posted in closer`;
-                  showBrowserPostNotification(notifTitle, newPost.body, () => {
+                  showBrowserPostNotification(notifTitle, alertSnippet, () => {
                     setActiveChannel('feed');
                   });
                 }
@@ -537,12 +542,17 @@ export default function App() {
     return (
       <div className="min-h-screen bg-[#141413] text-[#edece8] flex items-center justify-center p-6 font-['Inter'] selection:bg-[#2b2b28] selection:text-white">
         <div className="max-w-sm w-full bg-[#191918] border border-[#262624] rounded-2xl p-7 space-y-6">
-          <div className="space-y-2">
-            <h1 className="font-['Inter'] text-3xl font-medium tracking-tight text-white lowercase">
-              closer
-            </h1>
+          <div className="space-y-2.5">
+            <div className="flex items-center gap-2.5">
+              <div className="w-8 h-8 rounded-xl bg-[#141413] border border-[#2a2a27] flex items-center justify-center text-[#edece8]">
+                <Truck className="w-4 h-4" />
+              </div>
+              <h1 className="font-['Inter'] text-3xl font-medium tracking-tight text-white lowercase">
+                closer
+              </h1>
+            </div>
             <p className="text-xs text-[#8d8c85] leading-relaxed">
-              Go To Truckers — Closers Team Hub. Share posts, updates, and daily call volume in real time.
+              Go To Truckers — Closers Team Hub. Share posts, updates, private messages, and daily call volume in real time.
             </p>
           </div>
 
@@ -602,21 +612,28 @@ export default function App() {
         onSignOut={handleSignOut}
         isOpen={isSidebarOpen}
         onToggleOpen={() => setIsSidebarOpen(!isSidebarOpen)}
+        isMobileOpen={isMobileNavOpen}
+        onCloseMobile={() => setIsMobileNavOpen(false)}
       />
 
       <div className="flex-1 flex flex-col min-w-0 h-screen overflow-y-auto bg-[#141413]">
         <div className="lg:hidden h-12 border-b border-[#222220] bg-[#0f0f0e] flex items-center px-4 justify-between shrink-0 font-['Inter']">
           <button
-            onClick={() => setIsSidebarOpen(!isSidebarOpen)}
-            className="p-1.5 text-[#8d8c85] hover:text-white rounded bg-[#1e1e1c]"
-            title="Toggle navigation"
+            type="button"
+            onClick={() => setIsMobileNavOpen(true)}
+            className="p-1.5 text-[#8d8c85] hover:text-white rounded-lg bg-[#191918] border border-[#262624]"
+            title="Open navigation"
           >
             <Menu className="w-4 h-4" />
           </button>
-          <span className="font-['Inter'] text-sm font-medium text-white lowercase">closer</span>
+          <div className="flex items-center gap-1.5">
+            <Truck className="w-3.5 h-3.5 text-[#edece8]" />
+            <span className="font-['Inter'] text-sm font-medium text-white lowercase">closer</span>
+          </div>
           <button
+            type="button"
             onClick={() => setIsNotificationModalOpen(true)}
-            className="p-1.5 text-[#8d8c85] hover:text-white rounded bg-[#1e1e1c]"
+            className="p-1.5 text-[#8d8c85] hover:text-white rounded-lg bg-[#191918] border border-[#262624]"
             title="Post notifications"
           >
             {notificationPrefs.postNotificationsEnabled ? (

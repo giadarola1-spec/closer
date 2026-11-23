@@ -4,7 +4,7 @@ import { db, OperationType, handleFirestoreError } from '../firebase.ts';
 import { TeamMember, DirectThread, LIMITS, getOtherParticipantId } from '../types/team.ts';
 import { compressProfileImage, sanitizePhotoUrl } from '../utils/image.ts';
 import { Avatar } from './Avatar.tsx';
-import { Check, Edit3, Phone, Camera, Upload, Trash2, Send } from 'lucide-react';
+import { Check, Edit3, Phone, Camera, Upload, Trash2, Send, Search, X } from 'lucide-react';
 
 interface RosterViewProps {
   members: TeamMember[];
@@ -52,6 +52,8 @@ export const RosterView: React.FC<RosterViewProps> = ({
   const [saving, setSaving] = useState(false);
   const [callsSaving, setCallsSaving] = useState(false);
   const [photoSaving, setPhotoSaving] = useState(false);
+  const [statusSaving, setStatusSaving] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
 
   const cardFileInputRef = useRef<HTMLInputElement | null>(null);
   const editFileInputRef = useRef<HTMLInputElement | null>(null);
@@ -168,10 +170,37 @@ export const RosterView: React.FC<RosterViewProps> = ({
     handleUpdateDailyCalls(sanitizeCalls(quickCallsInput));
   };
 
+  const handleQuickStatusSelect = async (preset: string) => {
+    if (!currentMember || statusSaving) return;
+    setStatusText(preset);
+    setStatusSaving(true);
+    const path = `members/${currentUserId}`;
+    try {
+      await updateDoc(doc(db, 'members', currentUserId), {
+        statusText: preset,
+        updatedAt: serverTimestamp(),
+      });
+      onNotify(`Status: ${preset}`);
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, path);
+    } finally {
+      setStatusSaving(false);
+    }
+  };
+
   const sortedMembers = [...members].sort((a, b) => {
     if (a.uid === currentUserId) return -1;
     if (b.uid === currentUserId) return 1;
     return a.displayName.localeCompare(b.displayName);
+  });
+
+  const filteredMembers = sortedMembers.filter((m) => {
+    const q = searchQuery.trim().toLowerCase();
+    if (!q) return true;
+    return (
+      m.displayName.toLowerCase().includes(q) ||
+      (m.statusText || '').toLowerCase().includes(q)
+    );
   });
 
   const totalDailyCalls = sortedMembers.reduce(
@@ -191,33 +220,85 @@ export const RosterView: React.FC<RosterViewProps> = ({
   }
 
   return (
-    <div className="max-w-3xl mx-auto py-8 px-4 space-y-6 font-['Inter']">
+    <div className="max-w-4xl mx-auto py-6 sm:py-8 px-4 space-y-5 font-['Inter']">
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[#222220] pb-4">
         <div>
           <h1 className="text-xl font-medium text-[#edece8] tracking-tight">
             Closers Roster
           </h1>
           <p className="text-xs text-[#8d8c85] mt-1">
-            {sortedMembers.length} {sortedMembers.length === 1 ? 'closer' : 'closers'} active
+            <span className="tabular-nums">{sortedMembers.length}</span>{' '}
+            {sortedMembers.length === 1 ? 'closer' : 'closers'} active
             {' · '}
             <span className="tabular-nums text-[#c9c8c2]">
               {totalDailyCalls} calls/day total
             </span>
           </p>
         </div>
-        {currentMember && !isEditing && (
-          <button
-            onClick={() => {
-              setPhotoError(null);
-              setIsEditing(true);
-            }}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#1e1e1c] hover:bg-[#282826] border border-[#2f2f2c] text-xs text-[#edece8] transition-colors"
-          >
-            <Edit3 className="w-3.5 h-3.5" />
-            <span>Edit my status</span>
-          </button>
-        )}
+
+        <div className="flex items-center gap-2">
+          <div className="relative w-44 sm:w-56">
+            <Search className="w-3.5 h-3.5 text-[#71706b] absolute left-3 top-1/2 -translate-y-1/2" />
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Filter closers..."
+              className="w-full bg-[#191918] border border-[#262624] rounded-xl pl-8 pr-7 py-1.5 text-xs text-white placeholder-[#71706b] outline-none focus:border-[#42423e] transition-colors"
+            />
+            {searchQuery && (
+              <button
+                type="button"
+                onClick={() => setSearchQuery('')}
+                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[#71706b] hover:text-white"
+              >
+                <X className="w-3 h-3" />
+              </button>
+            )}
+          </div>
+
+          {currentMember && !isEditing && (
+            <button
+              type="button"
+              onClick={() => {
+                setPhotoError(null);
+                setIsEditing(true);
+              }}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-[#191918] hover:bg-[#242422] border border-[#2a2a27] text-xs text-[#edece8] transition-colors whitespace-nowrap shrink-0"
+            >
+              <Edit3 className="w-3.5 h-3.5" />
+              <span>Edit profile</span>
+            </button>
+          )}
+        </div>
       </div>
+
+      {/* 1-Click Quick Status Selector */}
+      {currentMember && !isEditing && (
+        <div className="flex flex-wrap items-center justify-between gap-2 bg-[#191918] border border-[#262624] rounded-2xl px-4 py-3">
+          <span className="text-xs text-[#8d8c85]">Your status</span>
+          <div className="flex flex-wrap items-center gap-1.5">
+            {STATUS_PRESETS.map((preset) => {
+              const active = (currentMember.statusText || '').trim() === preset;
+              return (
+                <button
+                  key={preset}
+                  type="button"
+                  disabled={statusSaving}
+                  onClick={() => handleQuickStatusSelect(preset)}
+                  className={`px-2.5 py-1 rounded-lg border text-xs transition-colors whitespace-nowrap ${
+                    active
+                      ? 'bg-[#2a2a27] border-[#42423e] text-white font-medium'
+                      : 'bg-[#141413] border-[#262624] text-[#8d8c85] hover:text-[#edece8] hover:border-[#363632]'
+                  }`}
+                >
+                  {preset}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       {isEditing && currentMember && (
         <form
@@ -388,16 +469,24 @@ export const RosterView: React.FC<RosterViewProps> = ({
         className="hidden"
       />
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-        {sortedMembers.map((member) => {
-          const isMe = member.uid === currentUserId;
-          const callsCount = typeof member.dailyCalls === 'number' ? member.dailyCalls : 0;
+      {filteredMembers.length === 0 ? (
+        <div className="bg-[#191918] border border-[#262624] rounded-2xl p-8 text-center space-y-2">
+          <p className="text-sm text-[#edece8] font-medium">No matching closers</p>
+          <p className="text-xs text-[#71706b]">Try a different name or status keyword.</p>
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+          {filteredMembers.map((member) => {
+            const isMe = member.uid === currentUserId;
+            const callsCount = typeof member.dailyCalls === 'number' ? member.dailyCalls : 0;
 
-          return (
-            <div
-              key={member.uid}
-              className="bg-[#191918] border border-[#262624] rounded-xl p-4 flex flex-col justify-between space-y-3"
-            >
+            return (
+              <div
+                key={member.uid}
+                className={`bg-[#191918] rounded-2xl p-4 flex flex-col justify-between space-y-3 border transition-colors ${
+                  isMe ? 'border-[#3a3a36]' : 'border-[#262624] hover:border-[#32322f]'
+                }`}
+              >
               <div className="flex items-start gap-3">
                 {isMe ? (
                   <button
@@ -511,7 +600,8 @@ export const RosterView: React.FC<RosterViewProps> = ({
             </div>
           );
         })}
-      </div>
+        </div>
+      )}
     </div>
   );
 };

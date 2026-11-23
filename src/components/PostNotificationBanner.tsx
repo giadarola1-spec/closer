@@ -21,7 +21,7 @@ export const PostNotificationBanner: React.FC<PostNotificationBannerProps> = ({
       {alerts.map((alert) => (
         <div
           key={alert.id}
-          className="bg-[#1f1f1e] border border-[#3a3a36] rounded-2xl p-3.5 shadow-2xl flex items-start gap-3"
+          className="bg-[#191918] border border-[#343430] rounded-2xl p-3.5 shadow-xl flex items-start gap-3 animate-in fade-in slide-in-from-top-2 duration-150"
         >
           <button
             type="button"

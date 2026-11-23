@@ -8,6 +8,7 @@ export const LIMITS = {
   STATUS_TEXT_MAX: 140,
   DAILY_CALLS_MAX: 10000,
   PHOTO_URL_MAX: 32000,
+  IMAGE_URL_MAX: 1000,
   TITLE_MAX: 140,
   BODY_MAX: 4000,
   COMMENT_MAX: 2000,
@@ -43,6 +44,7 @@ export interface TeamPost {
   category: PostCategory;
   title: string;
   body: string;
+  imageUrl?: string | null;
   lane: string;
   equipment: EquipmentType;
   loadsPerWeek: string;

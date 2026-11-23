@@ -122,7 +122,7 @@ service cloud.firestore {
           'replyCount', 'likeCount', 'lastCommentId', 'createdAt', 'updatedAt'
         ])
         && data.keys().hasOnly([
-          'teamId', 'authorId', 'authorName', 'category', 'title', 'body',
+          'teamId', 'authorId', 'authorName', 'category', 'title', 'body', 'imageUrl',
           'lane', 'equipment', 'loadsPerWeek', 'stageStatus', 'pinned',
           'replyCount', 'likeCount', 'lastCommentId', 'createdAt', 'updatedAt'
         ])
@@ -131,7 +131,18 @@ service cloud.firestore {
         && data.authorName is string && data.authorName.size() >= 1 && data.authorName.size() <= 60
         && data.category in ['post', 'message', 'idea', 'mql', 'sql', 'opening']
         && data.title is string && data.title.size() <= 140
-        && data.body is string && data.body.size() >= 1 && data.body.size() <= 4000
+        && (!('imageUrl' in data) || data.imageUrl == null || (
+          data.imageUrl is string
+          && data.imageUrl.size() >= 8
+          && data.imageUrl.size() <= 1000
+          && data.imageUrl.matches('^https://.*')
+        ))
+        && data.body is string
+        && data.body.size() <= 4000
+        && (
+          data.body.size() >= 1
+          || ('imageUrl' in data && data.imageUrl is string && data.imageUrl.size() >= 8)
+        )
         && data.lane is string && data.lane.size() <= 80
         && data.equipment in ['', 'Dry Van', 'Reefer', 'Both']
         && data.loadsPerWeek is string && data.loadsPerWeek.size() <= 30
@@ -402,7 +413,6 @@ service cloud.firestore {
         (resource != null && request.auth.uid in existing().participantIds)
       );
       allow list: if isVerified()
-        && isValidTeamId(resource.data.teamId)
         && request.auth.uid in resource.data.participantIds;
       allow create: if isVerified()
         && isValidId(dmId)
@@ -441,7 +451,6 @@ service cloud.firestore {
           && request.auth.uid in existing().participantIds;
         allow list: if isVerified()
           && isValidId(dmId)
-          && isValidTeamId(resource.data.teamId)
           && request.auth.uid in resource.data.participantIds;
         allow create: if isVerified()
           && isValidId(dmId)
@@ -462,6 +471,7 @@ service cloud.firestore {
         allow delete: if isVerified()
           && isValidId(dmId)
           && isValidId(messageId)
+          && resource != null
           && existing().senderId == request.auth.uid;
       }
     }

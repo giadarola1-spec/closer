@@ -122,8 +122,14 @@
         },
         "body": {
           "type": "string",
-          "minLength": 1,
-          "maxLength": 4000
+          "maxLength": 4000,
+          "description": "Post text body (required unless imageUrl is provided)."
+        },
+        "imageUrl": {
+          "type": "string",
+          "maxLength": 1000,
+          "pattern": "^https://.*",
+          "description": "Optional Cloudinary secure_url image attached to the post (or null when omitted)."
         },
         "lane": {
           "type": "string",

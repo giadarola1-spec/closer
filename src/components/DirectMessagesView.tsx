@@ -10,7 +10,7 @@ import {
   writeBatch,
   serverTimestamp,
 } from 'firebase/firestore';
-import { ArrowUp, Lock, Search, Trash2, ChevronLeft, X } from 'lucide-react';
+import { ArrowUp, Lock, Search, Trash2, ChevronLeft, X, Copy } from 'lucide-react';
 import { db, OperationType, handleFirestoreError } from '../firebase.ts';
 import {
   TEAM_ID,
@@ -64,6 +64,22 @@ function formatShortTime(ts: any): string {
   if (diffSec < 3600) return `${Math.floor(diffSec / 60)}m`;
   if (diffSec < 86400) return `${Math.floor(diffSec / 3600)}h`;
   return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+}
+
+function getDayKey(ts: any): string {
+  const date = ts && typeof ts.toDate === 'function' ? ts.toDate() : ts ? new Date(ts) : new Date();
+  return `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`;
+}
+
+function formatDayDivider(ts: any): string {
+  const date = ts && typeof ts.toDate === 'function' ? ts.toDate() : ts ? new Date(ts) : new Date();
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const target = new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
+  const diffDays = Math.round((today - target) / 86400000);
+  if (diffDays === 0) return 'Today';
+  if (diffDays === 1) return 'Yesterday';
+  return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 }
 
 export const DirectMessagesView: React.FC<DirectMessagesViewProps> = ({
@@ -168,6 +184,21 @@ export const DirectMessagesView: React.FC<DirectMessagesViewProps> = ({
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages.length, dmId]);
+
+  useEffect(() => {
+    if (!mobileShowChat) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setMobileShowChat(false);
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [mobileShowChat]);
+
+  const handleCopyMessage = (text: string) => {
+    if (!text) return;
+    navigator.clipboard?.writeText(text).catch(() => {});
+    onNotify('Message copied');
+  };
 
   const handleSelectPerson = (uid: string) => {
     onSelectUser(uid);
@@ -413,45 +444,76 @@ export const DirectMessagesView: React.FC<DirectMessagesViewProps> = ({
               </p>
             </div>
           ) : (
-            messages.map((msg) => {
+            messages.map((msg, idx) => {
               const isMine = msg.senderId === currentMember.uid;
+              const prevMsg = idx > 0 ? messages[idx - 1] : null;
+              const nextMsg = idx < messages.length - 1 ? messages[idx + 1] : null;
+              const dayKey = getDayKey(msg.createdAt);
+              const showDayDivider = !prevMsg || getDayKey(prevMsg.createdAt) !== dayKey;
+              const sameSenderAsPrev =
+                !showDayDivider && prevMsg && prevMsg.senderId === msg.senderId;
+              const sameSenderAsNext =
+                nextMsg &&
+                getDayKey(nextMsg.createdAt) === dayKey &&
+                nextMsg.senderId === msg.senderId;
+
               return (
-                <div
-                  key={msg.id}
-                  className={`group flex flex-col ${
-                    isMine ? 'items-end' : 'items-start'
-                  }`}
-                >
+                <React.Fragment key={msg.id}>
+                  {showDayDivider && (
+                    <div className="flex items-center justify-center py-2">
+                      <span className="text-[11px] text-[#71706b] px-2">
+                        {formatDayDivider(msg.createdAt)}
+                      </span>
+                    </div>
+                  )}
                   <div
-                    className={`flex items-end gap-1.5 max-w-[85%] sm:max-w-[70%] ${
-                      isMine ? 'flex-row-reverse' : 'flex-row'
-                    }`}
+                    className={`group flex flex-col ${
+                      isMine ? 'items-end' : 'items-start'
+                    } ${sameSenderAsPrev ? '!mt-1' : 'mt-2'}`}
                   >
                     <div
-                      className={`rounded-2xl px-3.5 py-2.5 text-sm leading-relaxed whitespace-pre-wrap break-words ${
-                        isMine
-                          ? 'bg-[#edece8] text-black'
-                          : 'bg-[#191918] border border-[#262624] text-[#e0dfd9]'
+                      className={`flex items-end gap-1.5 max-w-[85%] sm:max-w-[70%] ${
+                        isMine ? 'flex-row-reverse' : 'flex-row'
                       }`}
                     >
-                      {msg.body}
-                    </div>
-
-                    {isMine && (
-                      <button
-                        type="button"
-                        onClick={() => handleDeleteMessage(msg.id)}
-                        className="opacity-0 group-hover:opacity-100 p-1 rounded-md text-[#71706b] hover:text-white hover:bg-[#1e1e1c] transition-opacity shrink-0"
-                        title="Delete message"
+                      <div
+                        className={`rounded-2xl px-3.5 py-2 text-sm leading-relaxed whitespace-pre-wrap break-words ${
+                          isMine
+                            ? 'bg-[#edece8] text-black'
+                            : 'bg-[#191918] border border-[#262624] text-[#e0dfd9]'
+                        }`}
                       >
-                        <Trash2 className="w-3 h-3" />
-                      </button>
+                        {msg.body}
+                      </div>
+
+                      <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => handleCopyMessage(msg.body)}
+                          className="p-1 rounded-md text-[#71706b] hover:text-white hover:bg-[#1e1e1c]"
+                          title="Copy message"
+                        >
+                          <Copy className="w-3 h-3" />
+                        </button>
+                        {isMine && (
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteMessage(msg.id)}
+                            className="p-1 rounded-md text-[#71706b] hover:text-white hover:bg-[#1e1e1c]"
+                            title="Delete message"
+                          >
+                            <Trash2 className="w-3 h-3" />
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                    {!sameSenderAsNext && (
+                      <span className="text-[10px] text-[#686761] mt-1 px-1 tabular-nums">
+                        {formatMessageTime(msg.createdAt)}
+                      </span>
                     )}
                   </div>
-                  <span className="text-[10px] text-[#686761] mt-1 px-1 tabular-nums">
-                    {formatMessageTime(msg.createdAt)}
-                  </span>
-                </div>
+                </React.Fragment>
               );
             })
           )}

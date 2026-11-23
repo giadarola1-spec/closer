@@ -69,3 +69,57 @@ export async function compressProfileImage(file: File): Promise<string> {
     URL.revokeObjectURL(objectUrl);
   }
 }
+
+export const CLOUDINARY_CLOUD_NAME = 'uk6nkyzk';
+export const CLOUDINARY_UPLOAD_PRESET = 'closerimages';
+export const CLOUDINARY_UPLOAD_ENDPOINT = `https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD_NAME}/image/upload`;
+export const MAX_POST_IMAGE_BYTES = 15 * 1024 * 1024;
+
+export function sanitizePostImageUrl(raw: string | null | undefined): string {
+  const trimmed = (raw || '').trim();
+  if (!trimmed || trimmed.length > LIMITS.IMAGE_URL_MAX) return '';
+  if (/^https:\/\/.+/.test(trimmed)) {
+    return trimmed;
+  }
+  return '';
+}
+
+export async function uploadPostImageToCloudinary(file: File): Promise<string> {
+  if (!file.type.startsWith('image/')) {
+    throw new Error('Please select a valid image file (PNG, JPG, WebP, or GIF).');
+  }
+  if (file.size > MAX_POST_IMAGE_BYTES) {
+    throw new Error('Image is too large (max 15 MB).');
+  }
+
+  const formData = new FormData();
+  formData.append('file', file);
+  formData.append('upload_preset', CLOUDINARY_UPLOAD_PRESET);
+
+  let response: Response;
+  try {
+    response = await fetch(CLOUDINARY_UPLOAD_ENDPOINT, {
+      method: 'POST',
+      body: formData,
+    });
+  } catch {
+    throw new Error('Network error while uploading image. Please check your connection and try again.');
+  }
+
+  const data = await response.json().catch(() => null);
+  if (!response.ok) {
+    const apiMessage =
+      typeof data?.error?.message === 'string' && data.error.message.trim()
+        ? data.error.message.trim()
+        : `Image upload failed (HTTP ${response.status}).`;
+    throw new Error(apiMessage);
+  }
+
+  const secureUrl = typeof data?.secure_url === 'string' ? data.secure_url.trim() : '';
+  if (!secureUrl || !/^https:\/\/.+/.test(secureUrl)) {
+    throw new Error('Image upload succeeded but did not return a valid secure URL.');
+  }
+
+  return secureUrl;
+}
+

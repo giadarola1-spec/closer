@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Bell, BellOff, Volume2, VolumeX, X, Play } from 'lucide-react';
 import { NotificationPreferences, NotificationTone } from '../types/team.ts';
 import {
@@ -32,6 +32,15 @@ export const NotificationSettingsModal: React.FC<NotificationSettingsModalProps>
 }) => {
   const [browserNote, setBrowserNote] = useState<string | null>(null);
 
+  useEffect(() => {
+    if (!isOpen) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [isOpen, onClose]);
+
   if (!isOpen) return null;
 
   const browserSupported = canUseBrowserNotifications();
@@ -62,11 +71,14 @@ export const NotificationSettingsModal: React.FC<NotificationSettingsModalProps>
 
   return (
     <div
-      className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4 font-['Inter']"
+      role="dialog"
+      aria-modal="true"
+      aria-label="Post notification settings"
+      className="fixed inset-0 z-50 bg-black/75 flex items-center justify-center p-4 font-['Inter'] animate-in fade-in duration-150"
       onClick={onClose}
     >
       <div
-        className="w-full max-w-md bg-[#191918] border border-[#2a2a27] rounded-2xl p-5 space-y-5 shadow-2xl"
+        className="w-full max-w-md bg-[#191918] border border-[#2a2a27] rounded-2xl p-5 space-y-5 shadow-2xl animate-in zoom-in-95 duration-150"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-start justify-between gap-3 border-b border-[#222220] pb-3.5">
