@@ -37,11 +37,13 @@ import { Sidebar } from './components/Sidebar.tsx';
 import { TeamFeedView } from './components/TeamFeedView.tsx';
 import { RosterView } from './components/RosterView.tsx';
 import { DirectMessagesView } from './components/DirectMessagesView.tsx';
+import { StatisticsView } from './components/StatisticsView.tsx';
 import { NotificationSettingsModal } from './components/NotificationSettingsModal.tsx';
 import { SupervisorModal } from './components/SupervisorModal.tsx';
 import { PostNotificationBanner } from './components/PostNotificationBanner.tsx';
 import { Toast } from './components/Toast.tsx';
 import { sanitizePhotoUrl } from './utils/image.ts';
+import { textMentionsMember } from './utils/mentions.ts';
 import {
   isValidSyncKey,
   deriveSupervisorSyncKey,
@@ -379,7 +381,13 @@ export default function App() {
                 const authorProfile = membersRef.current.find(
                   (m) => m.uid === newPost.authorId
                 );
+                const myProfile =
+                  membersRef.current.find((m) => m.uid === user.uid) || null;
                 const authorName = authorProfile?.displayName || newPost.authorName;
+                const mentionedMe = textMentionsMember(
+                  `${newPost.title || ''} ${newPost.body || ''}`,
+                  myProfile
+                );
 
                 const alertSnippet =
                   newPost.body?.trim() ||
@@ -388,7 +396,7 @@ export default function App() {
                 pushPostAlert({
                   id: `${newPost.id}_${Date.now()}`,
                   postId: newPost.id,
-                  authorName,
+                  authorName: mentionedMe ? `${authorName} mentioned you` : authorName,
                   authorPhotoUrl: authorProfile?.photoUrl,
                   title: newPost.title,
                   body: alertSnippet,
@@ -399,9 +407,11 @@ export default function App() {
                 }
 
                 if (activePrefs.postBrowserAlertsEnabled) {
-                  const notifTitle = newPost.title
-                    ? `${authorName}: ${newPost.title}`
-                    : `${authorName} posted in closer`;
+                  const notifTitle = mentionedMe
+                    ? `${authorName} mentioned you`
+                    : newPost.title
+                      ? `${authorName}: ${newPost.title}`
+                      : `${authorName} posted in closer`;
                   showBrowserPostNotification(notifTitle, alertSnippet, () => {
                     setActiveChannel('feed');
                   });
@@ -1012,6 +1022,14 @@ export default function App() {
               supervisorIds={supervisorIds}
               selectedUserId={selectedDmUserId}
               onSelectUser={(uid) => setSelectedDmUserId(uid)}
+              onNotify={showToast}
+            />
+          ) : activeChannel === 'statistics' ? (
+            <StatisticsView
+              currentMember={currentMember}
+              members={members}
+              isSupervisor={isSupervisor}
+              supervisorToken={supervisorToken}
               onNotify={showToast}
             />
           ) : (

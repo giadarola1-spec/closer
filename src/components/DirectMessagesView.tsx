@@ -24,6 +24,17 @@ import {
 } from '../types/team.ts';
 import { Avatar } from './Avatar.tsx';
 import { SupervisorBadge } from './SupervisorBadge.tsx';
+import { MentionSuggestions } from './MentionSuggestions.tsx';
+import { extractYouTubeLinks } from '../utils/youtube.ts';
+import { YouTubeThumbnailCard } from './YouTubeThumbnailCard.tsx';
+import {
+  ActiveMentionQuery,
+  buildMembersByMentionHandle,
+  filterMentionCandidates,
+  findActiveMentionQuery,
+  insertMentionAtCursor,
+  resolveMentionedMember,
+} from '../utils/mentions.ts';
 
 interface DirectMessagesViewProps {
   currentMember: TeamMember;
@@ -85,6 +96,87 @@ function formatDayDivider(ts: any): string {
   return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 }
 
+function renderMessageTextWithLinks(
+  text: string,
+  isMine: boolean,
+  membersByHandle: Record<string, TeamMember>,
+  onSelectUser: (uid: string) => void
+): React.ReactNode {
+  const nodes: React.ReactNode[] = [];
+  const regex = /(https?:\/\/[^\s<>"']+)|(^|[\s(<"'])(@[a-zA-Z0-9_]{1,30})/g;
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+  let keyIdx = 0;
+
+  while ((match = regex.exec(text)) !== null) {
+    if (match[1]) {
+      if (match.index > lastIndex) {
+        nodes.push(text.slice(lastIndex, match.index));
+      }
+      const rawUrl = match[1];
+      const cleanedHref = rawUrl.replace(/[.,!?;:)\]]+$/g, '');
+      const trailing = rawUrl.slice(cleanedHref.length);
+      nodes.push(
+        <React.Fragment key={`url-${keyIdx++}`}>
+          <a
+            href={cleanedHref}
+            target="_blank"
+            rel="noopener noreferrer"
+            className={`underline underline-offset-2 transition-colors ${
+              isMine
+                ? 'text-black/90 hover:text-black'
+                : 'text-[#b5b4ad] hover:text-white'
+            }`}
+          >
+            {cleanedHref}
+          </a>
+          {trailing}
+        </React.Fragment>
+      );
+      lastIndex = match.index + rawUrl.length;
+    } else if (match[3]) {
+      const prefix = match[2] || '';
+      const mentionToken = match[3];
+      const mentionStart = match.index + prefix.length;
+      if (mentionStart > lastIndex) {
+        nodes.push(text.slice(lastIndex, mentionStart));
+      }
+      const targetMember = resolveMentionedMember(mentionToken, membersByHandle);
+      if (targetMember) {
+        nodes.push(
+          <button
+            key={`mention-${keyIdx++}`}
+            type="button"
+            onClick={() => onSelectUser(targetMember.uid)}
+            title={`Message ${targetMember.displayName}`}
+            className={`inline font-medium hover:underline underline-offset-2 cursor-pointer ${
+              isMine ? 'text-black' : 'text-[#f2c46d] hover:text-[#fbd88c]'
+            }`}
+          >
+            {mentionToken}
+          </button>
+        );
+      } else {
+        nodes.push(
+          <span
+            key={`mention-${keyIdx++}`}
+            className={`font-medium ${isMine ? 'text-black' : 'text-[#f2c46d]'}`}
+          >
+            {mentionToken}
+          </span>
+        );
+      }
+      lastIndex = mentionStart + mentionToken.length;
+    }
+  }
+
+  if (lastIndex < text.length) {
+    nodes.push(text.slice(lastIndex));
+  }
+
+  return nodes;
+}
+
 export const DirectMessagesView: React.FC<DirectMessagesViewProps> = ({
   currentMember,
   members,
@@ -101,9 +193,22 @@ export const DirectMessagesView: React.FC<DirectMessagesViewProps> = ({
   const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
   const [mobileShowChat, setMobileShowChat] = useState(Boolean(selectedUserId));
+  const [dmMentionQuery, setDmMentionQuery] = useState<ActiveMentionQuery | null>(null);
+  const [dmMentionIndex, setDmMentionIndex] = useState(0);
 
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
+
+  const membersByHandle = useMemo(() => buildMembersByMentionHandle(members), [members]);
+
+  const dmMentionCandidates = useMemo(() => {
+    if (!dmMentionQuery) return [];
+    return filterMentionCandidates(members, dmMentionQuery.query, 6);
+  }, [members, dmMentionQuery]);
+
+  useEffect(() => {
+    setDmMentionIndex(0);
+  }, [dmMentionQuery?.query]);
 
   const threadsByPeerId = useMemo(() => {
     const map: Record<string, DirectThread> = {};
@@ -281,7 +386,59 @@ export const DirectMessagesView: React.FC<DirectMessagesViewProps> = ({
     }
   };
 
+  const handleSelectDmMention = (member: TeamMember) => {
+    if (!dmMentionQuery) return;
+    const { nextValue, nextCursorPos } = insertMentionAtCursor(
+      draft,
+      dmMentionQuery.startIndex,
+      dmMentionQuery.endIndex,
+      member
+    );
+    setDraft(nextValue.slice(0, LIMITS.DM_BODY_MAX));
+    setDmMentionQuery(null);
+    window.requestAnimationFrame(() => {
+      if (inputRef.current) {
+        inputRef.current.focus();
+        const pos = Math.min(nextCursorPos, LIMITS.DM_BODY_MAX);
+        inputRef.current.setSelectionRange(pos, pos);
+      }
+    });
+  };
+
+  const handleDraftChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    const val = e.target.value;
+    const cursor = e.target.selectionStart ?? val.length;
+    setDraft(val);
+    setDmMentionQuery(findActiveMentionQuery(val, cursor));
+  };
+
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (dmMentionQuery && dmMentionCandidates.length > 0) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        setDmMentionIndex((prev) => (prev + 1) % dmMentionCandidates.length);
+        return;
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        setDmMentionIndex(
+          (prev) => (prev - 1 + dmMentionCandidates.length) % dmMentionCandidates.length
+        );
+        return;
+      }
+      if (e.key === 'Enter' || e.key === 'Tab') {
+        e.preventDefault();
+        const target = dmMentionCandidates[dmMentionIndex] || dmMentionCandidates[0];
+        if (target) handleSelectDmMention(target);
+        return;
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        setDmMentionQuery(null);
+        return;
+      }
+    }
+
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       handleSendMessage();
@@ -513,7 +670,12 @@ export const DirectMessagesView: React.FC<DirectMessagesViewProps> = ({
                             : 'bg-[#191918] border border-[#262624] text-[#e0dfd9]'
                         }`}
                       >
-                        {msg.body}
+                        {renderMessageTextWithLinks(
+                          msg.body,
+                          isMine,
+                          membersByHandle,
+                          handleSelectPerson
+                        )}
                       </div>
 
                       <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity shrink-0">
@@ -537,6 +699,25 @@ export const DirectMessagesView: React.FC<DirectMessagesViewProps> = ({
                         )}
                       </div>
                     </div>
+                    {(() => {
+                      const ytPreviews = extractYouTubeLinks(msg.body, 2);
+                      if (ytPreviews.length === 0) return null;
+                      return (
+                        <div
+                          className={`mt-1.5 flex flex-wrap gap-2 max-w-[85%] sm:max-w-[70%] ${
+                            isMine ? 'justify-end' : 'justify-start'
+                          }`}
+                        >
+                          {ytPreviews.map((preview) => (
+                            <YouTubeThumbnailCard
+                              key={preview.videoId}
+                              preview={preview}
+                              compact
+                            />
+                          ))}
+                        </div>
+                      );
+                    })()}
                     {!sameSenderAsNext && (
                       <span className="text-[10px] text-[#686761] mt-1 px-1 tabular-nums">
                         {formatMessageTime(msg.createdAt)}
@@ -555,18 +736,32 @@ export const DirectMessagesView: React.FC<DirectMessagesViewProps> = ({
           onSubmit={handleSendMessage}
           className="p-3 sm:p-4 border-t border-[#222220] bg-[#141413] shrink-0"
         >
-          <div className="bg-[#1f1f1e] border border-[#2f2f2c] focus-within:border-[#4d4d48] rounded-2xl p-2.5 flex items-end gap-2 transition-colors">
+          <div className="relative bg-[#1f1f1e] border border-[#2f2f2c] focus-within:border-[#4d4d48] rounded-2xl p-2.5 flex items-end gap-2 transition-colors">
+            {dmMentionQuery && dmMentionCandidates.length > 0 && (
+              <MentionSuggestions
+                candidates={dmMentionCandidates}
+                highlightedIndex={dmMentionIndex}
+                supervisorIds={supervisorIds}
+                placement="above"
+                onHoverIndex={setDmMentionIndex}
+                onSelect={handleSelectDmMention}
+              />
+            )}
             <textarea
               ref={inputRef}
               value={draft}
-              onChange={(e) => setDraft(e.target.value)}
+              onChange={handleDraftChange}
               onKeyDown={handleKeyDown}
+              onClick={(e) => {
+                const cursor = e.currentTarget.selectionStart ?? draft.length;
+                setDmMentionQuery(findActiveMentionQuery(draft, cursor));
+              }}
               maxLength={LIMITS.DM_BODY_MAX}
               rows={1}
               placeholder={
                 isSelfThread
-                  ? 'Write a private note...'
-                  : `Message ${activeRecipient.displayName}...`
+                  ? 'Write a private note... (use @ to mention)'
+                  : `Message ${activeRecipient.displayName}... (use @ to mention)`
               }
               className="flex-1 bg-transparent text-sm text-white placeholder-[#71706b] outline-none resize-none px-1.5 py-1 max-h-36 leading-relaxed"
             />

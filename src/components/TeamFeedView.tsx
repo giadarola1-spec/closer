@@ -32,6 +32,7 @@ import {
   ChevronDown,
   Check,
   Plus,
+  AtSign,
 } from 'lucide-react';
 import { db, OperationType, handleFirestoreError } from '../firebase.ts';
 import {
@@ -44,12 +45,24 @@ import {
 } from '../types/team.ts';
 import { Avatar } from './Avatar.tsx';
 import { SupervisorBadge } from './SupervisorBadge.tsx';
+import { MentionSuggestions } from './MentionSuggestions.tsx';
 import { TweetCard, TweetSkeleton } from '@/components/ui/tweet-card';
 import {
   MAX_POST_IMAGE_BYTES,
   sanitizePostImageUrl,
   uploadPostImageToCloudinary,
 } from '../utils/image.ts';
+import { extractYouTubeLinks } from '../utils/youtube.ts';
+import { YouTubeThumbnailCard } from './YouTubeThumbnailCard.tsx';
+import {
+  ActiveMentionQuery,
+  buildMembersByMentionHandle,
+  filterMentionCandidates,
+  findActiveMentionQuery,
+  getMentionHandle,
+  insertMentionAtCursor,
+  resolveMentionedMember,
+} from '../utils/mentions.ts';
 
 interface TeamFeedViewProps {
   currentMember: TeamMember;
@@ -142,7 +155,7 @@ function buildTweetFromPost(
   const hashtags: NonNullable<Tweet['entities']>['hashtags'] = [];
   const userMentions: NonNullable<Tweet['entities']>['user_mentions'] = [];
 
-  const tokenRegex = /(https?:\/\/[^\s<>"']+)|(^|\s)(#[a-zA-Z0-9_]{1,50})|(^|\s)(@[a-zA-Z0-9_]{1,30})/g;
+  const tokenRegex = /(https?:\/\/[^\s<>"']+)|(^|\s)(#[a-zA-Z0-9_]{1,50})|(^|[\s(<"'])(@[a-zA-Z0-9_]{1,30})/g;
   let match: RegExpExecArray | null;
   while ((match = tokenRegex.exec(text)) !== null) {
     if (match[1]) {
@@ -190,11 +203,7 @@ function buildTweetFromPost(
         ? new Date(post.createdAt)
         : new Date();
 
-  const screenName =
-    authorName
-      .toLowerCase()
-      .replace(/[^a-z0-9_]/g, '')
-      .slice(0, 20) || 'closer';
+  const screenName = getMentionHandle(authorName);
 
   return {
     __typename: 'Tweet',
@@ -232,10 +241,83 @@ function buildTweetFromPost(
   };
 }
 
+function renderCommentRichText(
+  text: string,
+  membersByHandle: Record<string, TeamMember>,
+  onOpenDm: (targetUid: string) => void
+): React.ReactNode {
+  const nodes: React.ReactNode[] = [];
+  const regex = /(https?:\/\/[^\s<>"']+)|(^|[\s(<"'])(@[a-zA-Z0-9_]{1,30})/g;
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+  let keyIdx = 0;
+
+  while ((match = regex.exec(text)) !== null) {
+    if (match[1]) {
+      if (match.index > lastIndex) {
+        nodes.push(text.slice(lastIndex, match.index));
+      }
+      const rawUrl = match[1];
+      const cleanedHref = rawUrl.replace(/[.,!?;:)\]]+$/g, '');
+      const trailing = rawUrl.slice(cleanedHref.length);
+      nodes.push(
+        <React.Fragment key={`url-${keyIdx++}`}>
+          <a
+            href={cleanedHref}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-[#b5b4ad] hover:text-white underline underline-offset-2 transition-colors"
+          >
+            {cleanedHref}
+          </a>
+          {trailing}
+        </React.Fragment>
+      );
+      lastIndex = match.index + rawUrl.length;
+    } else if (match[3]) {
+      const prefix = match[2] || '';
+      const mentionToken = match[3];
+      const mentionStart = match.index + prefix.length;
+      if (mentionStart > lastIndex) {
+        nodes.push(text.slice(lastIndex, mentionStart));
+      }
+      const targetMember = resolveMentionedMember(mentionToken, membersByHandle);
+      if (targetMember) {
+        nodes.push(
+          <button
+            key={`mention-${keyIdx++}`}
+            type="button"
+            onClick={() => onOpenDm(targetMember.uid)}
+            title={`Message ${targetMember.displayName}`}
+            className="inline text-[#f2c46d] hover:text-[#fbd88c] hover:underline underline-offset-2 font-medium transition-colors cursor-pointer"
+          >
+            {mentionToken}
+          </button>
+        );
+      } else {
+        nodes.push(
+          <span key={`mention-${keyIdx++}`} className="text-[#f2c46d] font-medium">
+            {mentionToken}
+          </span>
+        );
+      }
+      lastIndex = mentionStart + mentionToken.length;
+    }
+  }
+
+  if (lastIndex < text.length) {
+    nodes.push(text.slice(lastIndex));
+  }
+
+  return nodes;
+}
+
 interface PostCardProps {
   post: TeamPost;
   currentMember: TeamMember;
+  members: TeamMember[];
   membersById: Record<string, TeamMember>;
+  membersByHandle: Record<string, TeamMember>;
   supervisorIds: Set<string>;
   isSupervisor: boolean;
   onCopyText: (text: string, label: string) => void;
@@ -246,7 +328,9 @@ interface PostCardProps {
 const PostCard: React.FC<PostCardProps> = ({
   post,
   currentMember,
+  members,
   membersById,
+  membersByHandle,
   supervisorIds,
   isSupervisor,
   onCopyText,
@@ -260,8 +344,15 @@ const PostCard: React.FC<PostCardProps> = ({
   const [commentsLoaded, setCommentsLoaded] = useState(false);
   const [replyText, setReplyText] = useState('');
   const [replyBusy, setReplyBusy] = useState(false);
+  const [deletingCommentId, setDeletingCommentId] = useState<string | null>(null);
+  const [replyMentionQuery, setReplyMentionQuery] = useState<ActiveMentionQuery | null>(
+    null
+  );
+  const [replyMentionIndex, setReplyMentionIndex] = useState(0);
   const [confirmDeletePost, setConfirmDeletePost] = useState(false);
   const [deleteBusy, setDeleteBusy] = useState(false);
+
+  const replyInputRef = useRef<HTMLInputElement | null>(null);
 
   const isAuthor = post.authorId === currentMember.uid;
   const canModeratePost = isAuthor || isSupervisor;
@@ -269,6 +360,15 @@ const PostCard: React.FC<PostCardProps> = ({
   const authorMember = membersById[post.authorId];
   const displayAuthorName = authorMember?.displayName || post.authorName;
   const authorIsSupervisor = supervisorIds.has(post.authorId);
+
+  const replyMentionCandidates = useMemo(() => {
+    if (!replyMentionQuery) return [];
+    return filterMentionCandidates(members, replyMentionQuery.query, 6);
+  }, [members, replyMentionQuery]);
+
+  useEffect(() => {
+    setReplyMentionIndex(0);
+  }, [replyMentionQuery?.query]);
 
   useEffect(() => {
     const likePath = `posts/${post.id}/likes/${currentMember.uid}`;
@@ -284,8 +384,8 @@ const PostCard: React.FC<PostCardProps> = ({
     return () => unsub();
   }, [post.id, currentMember.uid]);
 
+  // Always load replies so they are visible inline without clicking the Reply button
   useEffect(() => {
-    if (!isThreadOpen) return;
     setCommentsLoaded(false);
     const commentsPath = `posts/${post.id}/comments`;
     const q = query(
@@ -311,7 +411,7 @@ const PostCard: React.FC<PostCardProps> = ({
       }
     );
     return () => unsub();
-  }, [isThreadOpen, post.id]);
+  }, [post.id]);
 
   const handleToggleLike = async () => {
     if (likeBusy) return;
@@ -409,11 +509,74 @@ const PostCard: React.FC<PostCardProps> = ({
   };
 
   const handleDeleteComment = async (commentId: string) => {
+    if (deletingCommentId) return;
+    setDeletingCommentId(commentId);
+    const commentRef = doc(db, 'posts', post.id, 'comments', commentId);
+    const postRef = doc(db, 'posts', post.id);
     try {
-      await deleteDoc(doc(db, 'posts', post.id, 'comments', commentId));
+      if ((post.replyCount || 0) > 0) {
+        const batch = writeBatch(db);
+        batch.delete(commentRef);
+        batch.update(postRef, {
+          replyCount: increment(-1),
+          lastCommentId: commentId,
+          updatedAt: serverTimestamp(),
+        });
+        await batch.commit();
+      } else {
+        await deleteDoc(commentRef);
+      }
       onNotify('Reply deleted');
     } catch (error) {
       handleFirestoreError(error, OperationType.DELETE, `posts/${post.id}/comments/${commentId}`);
+    } finally {
+      setDeletingCommentId(null);
+    }
+  };
+
+  const handleSelectReplyMention = (member: TeamMember) => {
+    if (!replyMentionQuery) return;
+    const { nextValue, nextCursorPos } = insertMentionAtCursor(
+      replyText,
+      replyMentionQuery.startIndex,
+      replyMentionQuery.endIndex,
+      member
+    );
+    setReplyText(nextValue.slice(0, LIMITS.COMMENT_MAX));
+    setReplyMentionQuery(null);
+    window.requestAnimationFrame(() => {
+      if (replyInputRef.current) {
+        replyInputRef.current.focus();
+        const pos = Math.min(nextCursorPos, LIMITS.COMMENT_MAX);
+        replyInputRef.current.setSelectionRange(pos, pos);
+      }
+    });
+  };
+
+  const handleReplyInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const val = e.target.value;
+    const cursor = e.target.selectionStart ?? val.length;
+    setReplyText(val);
+    setReplyMentionQuery(findActiveMentionQuery(val, cursor));
+  };
+
+  const handleReplyInputKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (!replyMentionQuery || replyMentionCandidates.length === 0) return;
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      setReplyMentionIndex((prev) => (prev + 1) % replyMentionCandidates.length);
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      setReplyMentionIndex(
+        (prev) => (prev - 1 + replyMentionCandidates.length) % replyMentionCandidates.length
+      );
+    } else if (e.key === 'Enter' || e.key === 'Tab') {
+      e.preventDefault();
+      const target = replyMentionCandidates[replyMentionIndex] || replyMentionCandidates[0];
+      if (target) handleSelectReplyMention(target);
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      setReplyMentionQuery(null);
     }
   };
 
@@ -514,7 +677,13 @@ const PostCard: React.FC<PostCardProps> = ({
 
           <button
             type="button"
-            onClick={() => setIsThreadOpen(!isThreadOpen)}
+            onClick={() => {
+              const nextOpen = !isThreadOpen;
+              setIsThreadOpen(nextOpen);
+              if (nextOpen) {
+                window.setTimeout(() => replyInputRef.current?.focus(), 40);
+              }
+            }}
             aria-expanded={isThreadOpen}
             className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg border transition-colors ${
               isThreadOpen
@@ -553,22 +722,25 @@ const PostCard: React.FC<PostCardProps> = ({
         )}
       </div>
 
-      {isThreadOpen && (
+      {((!commentsLoaded && (post.replyCount || 0) > 0) || comments.length > 0 || isThreadOpen) && (
         <div className="pt-2.5 space-y-3 border-t border-[#222220]">
-          {!commentsLoaded ? (
+          {!commentsLoaded && (post.replyCount || 0) > 0 ? (
             <div className="text-[11px] text-[#71706b] px-1">Loading replies...</div>
           ) : comments.length === 0 ? (
-            <div className="text-[11px] text-[#71706b] px-1">
-              No replies yet. Add the first reply below.
-            </div>
+            isThreadOpen && (
+              <div className="text-[11px] text-[#71706b] px-1">
+                No replies yet. Add the first reply below.
+              </div>
+            )
           ) : (
             <div className="space-y-2.5 pl-3 border-l border-[#2a2a27]">
               {comments.map((comment) => {
                 const commentMember = membersById[comment.authorId];
                 const commentName = commentMember?.displayName || comment.authorName;
                 const isOwnComment = comment.authorId === currentMember.uid;
-                const canDeleteComment = isOwnComment || isSupervisor;
+                const canDeleteComment = isOwnComment || isAuthor || isSupervisor;
                 const commentIsSupervisor = supervisorIds.has(comment.authorId);
+                const isDeletingThis = deletingCommentId === comment.id;
                 return (
                   <div key={comment.id} className="group space-y-1 text-xs">
                     <div className="flex items-center justify-between gap-2">
@@ -590,39 +762,84 @@ const PostCard: React.FC<PostCardProps> = ({
                         <button
                           type="button"
                           onClick={() => handleDeleteComment(comment.id)}
-                          className="opacity-0 group-hover:opacity-100 focus-visible:opacity-100 p-1 rounded text-[#71706b] hover:text-white hover:bg-[#222220] transition-opacity shrink-0"
-                          title={!isOwnComment && isSupervisor ? 'Delete reply (Supervisor)' : 'Delete reply'}
+                          disabled={isDeletingThis}
+                          className="p-1 rounded text-[#71706b] hover:text-white hover:bg-[#222220] disabled:opacity-40 transition-colors shrink-0"
+                          title={
+                            !isOwnComment && isSupervisor
+                              ? 'Delete reply (Supervisor)'
+                              : 'Delete reply'
+                          }
+                          aria-label="Delete reply"
                         >
-                          <Trash2 className="w-3 h-3" />
+                          {isDeletingThis ? (
+                            <Loader2 className="w-3 h-3 animate-spin" />
+                          ) : (
+                            <Trash2 className="w-3 h-3" />
+                          )}
                         </button>
                       )}
                     </div>
                     <p className="text-[#c9c8c2] leading-relaxed whitespace-pre-wrap pl-7">
-                      {comment.body}
+                      {renderCommentRichText(comment.body, membersByHandle, onOpenDm)}
                     </p>
+                    {(() => {
+                      const commentYt = extractYouTubeLinks(comment.body, 2);
+                      if (commentYt.length === 0) return null;
+                      return (
+                        <div className="pl-7 pt-1 flex flex-wrap gap-2">
+                          {commentYt.map((preview) => (
+                            <YouTubeThumbnailCard
+                              key={preview.videoId}
+                              preview={preview}
+                              compact
+                            />
+                          ))}
+                        </div>
+                      );
+                    })()}
                   </div>
                 );
               })}
             </div>
           )}
 
-          <form onSubmit={handleAddReply} className="flex items-center gap-2">
-            <input
-              type="text"
-              value={replyText}
-              onChange={(e) => setReplyText(e.target.value)}
-              maxLength={LIMITS.COMMENT_MAX}
-              placeholder="Write a reply..."
-              className="flex-1 bg-[#141413] border border-[#2a2a27] rounded-xl px-3 py-1.5 text-xs text-white placeholder-[#686761] outline-none focus:border-[#4d4d48] transition-colors"
-            />
-            <button
-              type="submit"
-              disabled={replyBusy || !replyText.trim()}
-              className="px-3.5 py-1.5 rounded-xl bg-white hover:bg-[#e0dfd9] disabled:bg-[#262624] disabled:text-[#5e5d58] text-black text-xs font-medium transition-colors shrink-0"
-            >
-              {replyBusy ? '...' : 'Reply'}
-            </button>
-          </form>
+          {isThreadOpen && (
+            <form onSubmit={handleAddReply} className="flex items-center gap-2">
+              <div className="relative flex-1 min-w-0">
+                <input
+                  ref={replyInputRef}
+                  type="text"
+                  value={replyText}
+                  onChange={handleReplyInputChange}
+                  onKeyDown={handleReplyInputKeyDown}
+                  onClick={(e) => {
+                    const cursor = e.currentTarget.selectionStart ?? replyText.length;
+                    setReplyMentionQuery(findActiveMentionQuery(replyText, cursor));
+                  }}
+                  maxLength={LIMITS.COMMENT_MAX}
+                  placeholder="Write a reply... (use @ to mention)"
+                  className="w-full bg-[#141413] border border-[#2a2a27] rounded-xl px-3 py-1.5 text-xs text-white placeholder-[#686761] outline-none focus:border-[#4d4d48] transition-colors"
+                />
+                {replyMentionQuery && replyMentionCandidates.length > 0 && (
+                  <MentionSuggestions
+                    candidates={replyMentionCandidates}
+                    highlightedIndex={replyMentionIndex}
+                    supervisorIds={supervisorIds}
+                    placement="above"
+                    onHoverIndex={setReplyMentionIndex}
+                    onSelect={handleSelectReplyMention}
+                  />
+                )}
+              </div>
+              <button
+                type="submit"
+                disabled={replyBusy || !replyText.trim()}
+                className="px-3.5 py-1.5 rounded-xl bg-white hover:bg-[#e0dfd9] disabled:bg-[#262624] disabled:text-[#5e5d58] text-black text-xs font-medium transition-colors shrink-0"
+              >
+                {replyBusy ? '...' : 'Reply'}
+              </button>
+            </form>
+          )}
         </div>
       )}
     </>
@@ -640,6 +857,12 @@ const PostCard: React.FC<PostCardProps> = ({
       headerActions={headerActions}
       footer={footerContent}
       onAuthorClick={authorMember ? () => onOpenDm(post.authorId) : undefined}
+      onMentionClick={(handle) => {
+        const target = resolveMentionedMember(handle, membersByHandle);
+        if (target) {
+          onOpenDm(target.uid);
+        }
+      }}
     />
   );
 };
@@ -671,6 +894,9 @@ export const TeamFeedView: React.FC<TeamFeedViewProps> = ({
   const [feedFilter, setFeedFilter] = useState<FeedFilterMode>('all');
   const [sortBy, setSortBy] = useState<FeedSortMode>('recent');
   const [isSortMenuOpen, setIsSortMenuOpen] = useState(false);
+  const [composerMentionQuery, setComposerMentionQuery] =
+    useState<ActiveMentionQuery | null>(null);
+  const [composerMentionIndex, setComposerMentionIndex] = useState(0);
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const sortMenuRef = useRef<HTMLDivElement | null>(null);
@@ -722,6 +948,17 @@ export const TeamFeedView: React.FC<TeamFeedViewProps> = ({
     }
     return map;
   }, [members]);
+
+  const membersByHandle = useMemo(() => buildMembersByMentionHandle(members), [members]);
+
+  const composerMentionCandidates = useMemo(() => {
+    if (!composerMentionQuery) return [];
+    return filterMentionCandidates(members, composerMentionQuery.query, 6);
+  }, [members, composerMentionQuery]);
+
+  useEffect(() => {
+    setComposerMentionIndex(0);
+  }, [composerMentionQuery?.query]);
 
   const handleImageSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -820,7 +1057,81 @@ export const TeamFeedView: React.FC<TeamFeedViewProps> = ({
     }
   };
 
+  const handleSelectComposerMention = (member: TeamMember) => {
+    if (!composerMentionQuery) return;
+    const { nextValue, nextCursorPos } = insertMentionAtCursor(
+      body,
+      composerMentionQuery.startIndex,
+      composerMentionQuery.endIndex,
+      member
+    );
+    setBody(nextValue.slice(0, LIMITS.BODY_MAX));
+    setComposerMentionQuery(null);
+    window.requestAnimationFrame(() => {
+      if (composerRef.current) {
+        composerRef.current.focus();
+        const pos = Math.min(nextCursorPos, LIMITS.BODY_MAX);
+        composerRef.current.setSelectionRange(pos, pos);
+      }
+    });
+  };
+
+  const handleInsertAtTrigger = () => {
+    const el = composerRef.current;
+    const cursor = el?.selectionStart ?? body.length;
+    const before = body.slice(0, cursor);
+    const after = body.slice(cursor);
+    const needsLeadingSpace = before.length > 0 && !/[\s(["']$/.test(before);
+    const inserted = `${needsLeadingSpace ? ' ' : ''}@`;
+    const nextValue = `${before}${inserted}${after}`.slice(0, LIMITS.BODY_MAX);
+    const nextCursor = Math.min(before.length + inserted.length, nextValue.length);
+    setBody(nextValue);
+    setComposerMentionQuery(findActiveMentionQuery(nextValue, nextCursor));
+    window.requestAnimationFrame(() => {
+      if (composerRef.current) {
+        composerRef.current.focus();
+        composerRef.current.setSelectionRange(nextCursor, nextCursor);
+      }
+    });
+  };
+
+  const handleComposerChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    const val = e.target.value;
+    const cursor = e.target.selectionStart ?? val.length;
+    setBody(val);
+    setComposerMentionQuery(findActiveMentionQuery(val, cursor));
+  };
+
   const handleComposerKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (composerMentionQuery && composerMentionCandidates.length > 0) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        setComposerMentionIndex((prev) => (prev + 1) % composerMentionCandidates.length);
+        return;
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        setComposerMentionIndex(
+          (prev) =>
+            (prev - 1 + composerMentionCandidates.length) %
+            composerMentionCandidates.length
+        );
+        return;
+      }
+      if (e.key === 'Enter' || e.key === 'Tab') {
+        e.preventDefault();
+        const target =
+          composerMentionCandidates[composerMentionIndex] || composerMentionCandidates[0];
+        if (target) handleSelectComposerMention(target);
+        return;
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        setComposerMentionQuery(null);
+        return;
+      }
+    }
+
     if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
       e.preventDefault();
       handlePublish();
@@ -902,6 +1213,10 @@ export const TeamFeedView: React.FC<TeamFeedViewProps> = ({
   };
 
   const hasDraft = Boolean(title.trim() || body.trim() || selectedImageFile);
+  const composerYoutubePreviews = useMemo(
+    () => extractYouTubeLinks([title, body].filter(Boolean).join(' '), 2),
+    [title, body]
+  );
 
   return (
     <div className="w-full max-w-[680px] py-6 sm:py-8 px-4 sm:px-6 space-y-5 font-['Inter']">
@@ -1003,17 +1318,45 @@ export const TeamFeedView: React.FC<TeamFeedViewProps> = ({
                 className="w-full bg-transparent border-b border-[#242422] pb-2 px-1 text-sm font-medium text-white placeholder-[#686761] outline-none focus:border-[#3d3d39] font-['Inter'] transition-colors"
               />
 
-              <textarea
-                ref={composerRef}
-                value={body}
-                onChange={(e) => setBody(e.target.value)}
-                onKeyDown={handleComposerKeyDown}
-                maxLength={LIMITS.BODY_MAX}
-                placeholder="Share an update, win, or note with the team..."
-                rows={3}
-                disabled={submitting || isUploadingImage}
-                className="w-full bg-transparent text-sm text-white placeholder-[#71706b] outline-none resize-none px-1 pt-0.5 leading-relaxed font-['Inter'] disabled:opacity-60"
-              />
+              <div className="relative">
+                <textarea
+                  ref={composerRef}
+                  value={body}
+                  onChange={handleComposerChange}
+                  onKeyDown={handleComposerKeyDown}
+                  onClick={(e) => {
+                    const cursor = e.currentTarget.selectionStart ?? body.length;
+                    setComposerMentionQuery(findActiveMentionQuery(body, cursor));
+                  }}
+                  maxLength={LIMITS.BODY_MAX}
+                  placeholder="Share an update, win, or note with the team... (use @ to mention)"
+                  rows={3}
+                  disabled={submitting || isUploadingImage}
+                  className="w-full bg-transparent text-sm text-white placeholder-[#71706b] outline-none resize-none px-1 pt-0.5 leading-relaxed font-['Inter'] disabled:opacity-60"
+                />
+                {composerMentionQuery && composerMentionCandidates.length > 0 && (
+                  <MentionSuggestions
+                    candidates={composerMentionCandidates}
+                    highlightedIndex={composerMentionIndex}
+                    supervisorIds={supervisorIds}
+                    placement="below"
+                    onHoverIndex={setComposerMentionIndex}
+                    onSelect={handleSelectComposerMention}
+                  />
+                )}
+              </div>
+
+              {composerYoutubePreviews.length > 0 && (
+                <div className="flex flex-wrap gap-2 pt-0.5">
+                  {composerYoutubePreviews.map((preview) => (
+                    <YouTubeThumbnailCard
+                      key={preview.videoId}
+                      preview={preview}
+                      compact
+                    />
+                  ))}
+                </div>
+              )}
 
               {imagePreviewUrl && (
                 <div className="relative w-fit max-w-full rounded-xl border border-[#2a2a27] bg-[#141413] p-2">
@@ -1095,6 +1438,17 @@ export const TeamFeedView: React.FC<TeamFeedViewProps> = ({
                   >
                     <ImagePlus className="w-3.5 h-3.5" />
                     <span>{selectedImageFile ? 'Change image' : 'Image'}</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={handleInsertAtTrigger}
+                    disabled={submitting || isUploadingImage}
+                    className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg border bg-[#141413] border-[#262624] text-[#9c9a92] hover:text-white hover:border-[#363632] text-xs transition-colors shrink-0 disabled:opacity-50"
+                    title="Mention a closer (@)"
+                  >
+                    <AtSign className="w-3.5 h-3.5" />
+                    <span>Mention</span>
                   </button>
                 </div>
 
@@ -1287,7 +1641,9 @@ export const TeamFeedView: React.FC<TeamFeedViewProps> = ({
                   key={post.id}
                   post={post}
                   currentMember={currentMember}
+                  members={members}
                   membersById={membersById}
+                  membersByHandle={membersByHandle}
                   supervisorIds={supervisorIds}
                   isSupervisor={isSupervisor}
                   onCopyText={onCopyText}

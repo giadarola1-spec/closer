@@ -475,6 +475,43 @@
         }
       },
       "required": ["logs", "updatedAt"]
+    },
+    "DailyCallStats": {
+      "title": "DailyCallStats",
+      "description": "Single daily RingCentral call statistics document keyed by EST date (YYYY-MM-DD).",
+      "type": "object",
+      "properties": {
+        "date": {
+          "type": "string",
+          "minLength": 10,
+          "maxLength": 10,
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+        },
+        "teamId": {
+          "type": "string",
+          "enum": ["gtt-closers", "gtt-closers-9"]
+        },
+        "rows": {
+          "type": "array",
+          "description": "Up to 50 closer call stat rows ({ id, uid, name, ext, liveTalkSeconds, outbound, connected, inbound, total })."
+        },
+        "updatedByUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "updatedByName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 60
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["date", "teamId", "rows", "updatedByUid", "updatedByName", "updatedAt"]
     }
   },
   "firestore": {
@@ -521,6 +558,10 @@
     "/floor_stats/{dateKey}": {
       "schema": { "$ref": "#/entities/FloorStats" },
       "description": "Real-time daily floor stats scoreboard keyed by EST YYYY-MM-DD."
+    },
+    "/daily_call_stats/{dateKey}": {
+      "schema": { "$ref": "#/entities/DailyCallStats" },
+      "description": "Single daily RingCentral closer call stats document keyed by EST YYYY-MM-DD."
     }
   }
 }

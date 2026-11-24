@@ -4,6 +4,8 @@ import type { Tweet } from "react-tweet/api"
 import { Pin, X } from "lucide-react"
 
 import { cn } from "@/lib/utils"
+import { extractYouTubeLinks } from "@/src/utils/youtube"
+import { YouTubeThumbnailCard } from "@/src/components/YouTubeThumbnailCard"
 
 interface BrandLogoProps {
   className?: string
@@ -257,7 +259,13 @@ export const TweetHeader = ({
   )
 }
 
-export const TweetBody = ({ tweet }: { tweet: EnrichedTweet }) => (
+export const TweetBody = ({
+  tweet,
+  onMentionClick,
+}: {
+  tweet: EnrichedTweet
+  onMentionClick?: (handle: string) => void
+}) => (
   <div className="text-[14px] leading-relaxed tracking-normal wrap-break-word whitespace-pre-wrap">
     {tweet.entities.map((entity, idx) => {
       switch (entity.type) {
@@ -273,9 +281,32 @@ export const TweetBody = ({ tweet }: { tweet: EnrichedTweet }) => (
               <span>{entity.text}</span>
             </a>
           )
+        case "mention": {
+          const handle = entity.text.replace(/^@/, "").toLowerCase()
+          if (onMentionClick) {
+            return (
+              <button
+                key={idx}
+                type="button"
+                onClick={() => onMentionClick(handle)}
+                title={`Message @${handle}`}
+                className="inline text-[#f2c46d] hover:text-[#fbd88c] hover:underline underline-offset-2 text-[14px] font-medium transition-colors cursor-pointer"
+              >
+                {entity.text}
+              </button>
+            )
+          }
+          return (
+            <span
+              key={idx}
+              className="text-[#f2c46d] text-[14px] font-medium"
+            >
+              {entity.text}
+            </span>
+          )
+        }
         case "symbol":
         case "hashtag":
-        case "mention":
           return (
             <span
               key={idx}
@@ -362,6 +393,7 @@ export interface MagicTweetProps {
   headerActions?: React.ReactNode
   footer?: React.ReactNode
   onAuthorClick?: () => void
+  onMentionClick?: (handle: string) => void
   className?: string
 }
 
@@ -376,6 +408,7 @@ export const MagicTweet = ({
   headerActions,
   footer,
   onAuthorClick,
+  onMentionClick,
   className,
   ...props
 }: MagicTweetProps) => {
@@ -409,11 +442,14 @@ export const MagicTweet = ({
   }
   const enrichedTweet = enrichTweet(safeTweet)
   const hasBodyText = Boolean(tweet.text && tweet.text.trim().length > 0)
+  const youtubePreviews = extractYouTubeLinks(
+    [title, tweet.text].filter(Boolean).join(" ")
+  )
 
   return (
     <article
       className={cn(
-        "relative flex h-fit w-full flex-col gap-3 overflow-hidden rounded-2xl border border-[#262624] hover:border-[#32322f] bg-[#191918] p-4 sm:p-5 transition-colors duration-150",
+        "relative flex h-fit w-full flex-col gap-3 rounded-2xl border border-[#262624] hover:border-[#32322f] bg-[#191918] p-4 sm:p-5 transition-colors duration-150",
         className
       )}
       {...props}
@@ -432,7 +468,16 @@ export const MagicTweet = ({
           {title}
         </h3>
       )}
-      {hasBodyText && <TweetBody tweet={enrichedTweet} />}
+      {hasBodyText && (
+        <TweetBody tweet={enrichedTweet} onMentionClick={onMentionClick} />
+      )}
+      {youtubePreviews.length > 0 && (
+        <div className="flex flex-wrap gap-2">
+          {youtubePreviews.map((preview) => (
+            <YouTubeThumbnailCard key={preview.videoId} preview={preview} />
+          ))}
+        </div>
+      )}
       {safeImageUrl && !imageLoadFailed && (
         <div className="w-fit max-w-full sm:max-w-[360px] overflow-hidden rounded-xl border border-[#262624] bg-[#141413]">
           <button

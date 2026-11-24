@@ -15,13 +15,16 @@ export const LIMITS = {
   DM_PREVIEW_MAX: 500,
   DM_BODY_MAX: 4000,
   DRAWBOARD_POINTS_MAX: 500,
+  STATS_ROWS_MAX: 50,
+  CALLER_NAME_MAX: 80,
+  EXT_MAX: 20,
 } as const;
 
 export type PostCategory = 'post' | 'message' | 'idea' | 'mql' | 'sql' | 'opening';
 export type EquipmentType = '' | 'Dry Van' | 'Reefer' | 'Both';
 export type StageStatus = 'open' | 'in_progress' | 'won' | 'archived';
 
-export type SidebarChannel = 'feed' | 'messages' | 'roster';
+export type SidebarChannel = 'feed' | 'messages' | 'roster' | 'statistics';
 
 export interface TeamMember {
   id: string;
@@ -192,5 +195,27 @@ export interface FloorStatsDoc {
   sql: number;
   opportunity: number;
   logs: FloorStatLogEntry[];
+  updatedAt?: any;
+}
+
+export interface DailyCallStatRow {
+  id: string;
+  uid: string;
+  name: string;
+  ext: string;
+  liveTalkSeconds: number;
+  outbound: number;
+  connected: number;
+  inbound: number;
+  total: number;
+}
+
+export interface DailyCallStatsDoc {
+  id?: string;
+  date: string;
+  teamId: (typeof ACCEPTED_TEAM_IDS)[number];
+  rows: DailyCallStatRow[];
+  updatedByUid: string;
+  updatedByName: string;
   updatedAt?: any;
 }
