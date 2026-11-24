@@ -1,8 +1,10 @@
-import express, { Request, Response } from 'express';
+import express, { NextFunction, Request, Response } from 'express';
 import crypto from 'crypto';
+import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
+import { GoogleGenAI, Type } from '@google/genai';
 
 dotenv.config();
 
@@ -31,6 +33,163 @@ interface ClaimedCredential {
 let claimedCredential: ClaimedCredential | null = null;
 const activeSupervisorSessions = new Map<string, number>();
 const failedAttempts = new Map<string, { count: number; resetAt: number }>();
+const marginNoteRateLimits = new Map<string, { count: number; resetAt: number }>();
+
+const MARGIN_NOTE_WINDOW_MS = 10 * 60 * 1000;
+const MARGIN_NOTE_MAX_REQUESTS = 20;
+
+const FIREBASE_PROJECT_ID = (() => {
+  try {
+    const raw = fs.readFileSync(path.resolve(__dirname, 'firebase-applet-config.json'), 'utf8');
+    const parsed = JSON.parse(raw);
+    return typeof parsed?.projectId === 'string' ? parsed.projectId : '';
+  } catch {
+    return '';
+  }
+})();
+
+let cachedGoogleCerts: { certs: Record<string, string>; expiresAt: number } | null = null;
+
+async function getFirebasePublicCerts(): Promise<Record<string, string>> {
+  const now = Date.now();
+  if (cachedGoogleCerts && cachedGoogleCerts.expiresAt > now) {
+    return cachedGoogleCerts.certs;
+  }
+
+  const resp = await fetch(
+    'https://www.googleapis.com/robot/v1/metadata/x509/securetoken@system.gserviceaccount.com'
+  );
+  if (!resp.ok) {
+    throw new Error(`Failed to fetch public verification certificates (${resp.status})`);
+  }
+  const certs = (await resp.json()) as Record<string, string>;
+  const cacheControl = resp.headers.get('cache-control') || '';
+  const maxAgeMatch = cacheControl.match(/max-age=(\d+)/i);
+  const ttlSec = maxAgeMatch ? Math.max(60, Number(maxAgeMatch[1])) : 3600;
+  cachedGoogleCerts = {
+    certs,
+    expiresAt: now + ttlSec * 1000,
+  };
+  return certs;
+}
+
+async function verifyFirebaseIdToken(token: string): Promise<{ uid: string } | null> {
+  if (!FIREBASE_PROJECT_ID || !token) return null;
+  const segments = token.split('.');
+  if (segments.length !== 3) return null;
+  const [encodedHeader, encodedPayload, encodedSignature] = segments;
+
+  try {
+    const header = JSON.parse(Buffer.from(encodedHeader, 'base64url').toString('utf8'));
+    if (header?.alg !== 'RS256' || typeof header?.kid !== 'string') return null;
+
+    const certs = await getFirebasePublicCerts();
+    const cert = certs[header.kid];
+    if (!cert) return null;
+
+    const verifier = crypto.createVerify('RSA-SHA256');
+    verifier.update(`${encodedHeader}.${encodedPayload}`);
+    verifier.end();
+
+    const sigBuffer = Buffer.from(encodedSignature, 'base64url');
+    if (!verifier.verify(cert, sigBuffer)) return null;
+
+    const payload = JSON.parse(Buffer.from(encodedPayload, 'base64url').toString('utf8'));
+    const nowSec = Math.floor(Date.now() / 1000);
+    const expectedIssuer = `https://securetoken.google.com/${FIREBASE_PROJECT_ID}`;
+
+    if (
+      payload?.iss !== expectedIssuer ||
+      payload?.aud !== FIREBASE_PROJECT_ID ||
+      typeof payload?.exp !== 'number' ||
+      payload.exp <= nowSec ||
+      typeof payload?.iat !== 'number' ||
+      payload.iat > nowSec + 300 ||
+      !isValidUid(payload?.sub) ||
+      payload?.email_verified !== true
+    ) {
+      return null;
+    }
+
+    return { uid: payload.sub };
+  } catch {
+    return null;
+  }
+}
+
+function checkMarginNoteRateLimit(uid: string): boolean {
+  const now = Date.now();
+  const entry = marginNoteRateLimits.get(uid);
+  if (!entry || entry.resetAt <= now) {
+    marginNoteRateLimits.set(uid, { count: 1, resetAt: now + MARGIN_NOTE_WINDOW_MS });
+    return true;
+  }
+  if (entry.count >= MARGIN_NOTE_MAX_REQUESTS) {
+    return false;
+  }
+  entry.count += 1;
+  return true;
+}
+
+const URL_EXTRACT_REGEX = /https?:\/\/[^\s<>"')]+/gi;
+
+function extractUniqueUrls(text: string): string[] {
+  const matches = text.match(URL_EXTRACT_REGEX) || [];
+  const seen = new Set<string>();
+  const clean: string[] = [];
+  for (const raw of matches) {
+    const trimmed = raw.replace(/[.,!?;:\]]+$/g, '');
+    if (trimmed && !seen.has(trimmed)) {
+      seen.add(trimmed);
+      clean.push(trimmed);
+    }
+    if (clean.length >= 5) break;
+  }
+  return clean;
+}
+
+function parseMarginNoteJson(rawText: string): { shouldGenerate: boolean; points: string[] } | null {
+  const trimmed = rawText.trim();
+  if (!trimmed) return null;
+
+  const fencedMatch = trimmed.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
+  const candidate = fencedMatch ? fencedMatch[1].trim() : trimmed;
+  const firstBrace = candidate.indexOf('{');
+  const lastBrace = candidate.lastIndexOf('}');
+  const jsonSlice =
+    firstBrace !== -1 && lastBrace > firstBrace
+      ? candidate.slice(firstBrace, lastBrace + 1)
+      : candidate;
+
+  try {
+    const parsed = JSON.parse(jsonSlice);
+    const shouldGenerate = Boolean(parsed?.shouldGenerate);
+    const rawPoints: unknown[] = Array.isArray(parsed?.points) ? parsed.points : [];
+    const points = rawPoints
+      .filter((item: unknown): item is string => typeof item === 'string')
+      .map((line: string) =>
+        line
+          .replace(/^[\s•\-*–—\d.)]+/, '')
+          .replace(/^(summary|key takeaways?|takeaways?|ai|gemini|youtube|generated by[^:]*|closer note|margin note)\s*:\s*/i, '')
+          .replace(/\s+/g, ' ')
+          .trim()
+      )
+      .filter(
+        (line: string) =>
+          line.length >= 8 &&
+          !/\b(gemini|generated by|youtube|ai assistant|language model)\b/i.test(line)
+      )
+      .map((line: string) => (line.length > 260 ? `${line.slice(0, 257).trimEnd()}...` : line))
+      .slice(0, 3);
+
+    if (!shouldGenerate || points.length === 0) {
+      return { shouldGenerate: false, points: [] };
+    }
+    return { shouldGenerate: true, points };
+  } catch {
+    return null;
+  }
+}
 
 function getConfiguredEnvPasscode(): string {
   return (process.env.SUPERVISOR_PASSCODE || '').trim();
@@ -248,6 +407,226 @@ app.post('/api/supervisor/logout', (req: Request, res: Response) => {
     activeSupervisorSessions.delete(uid);
   }
   return res.json({ ok: true });
+});
+
+function extractUpstreamError(err: any): {
+  status: number;
+  upstreamStatus?: string;
+  message: string;
+} {
+  let status =
+    typeof err?.status === 'number'
+      ? err.status
+      : typeof err?.code === 'number'
+        ? err.code
+        : typeof err?.error?.code === 'number'
+          ? err.error.code
+          : 502;
+  let upstreamStatus =
+    typeof err?.error?.status === 'string' ? err.error.status : undefined;
+  const rawMessage = err instanceof Error ? err.message : String(err || '');
+
+  const firstBrace = rawMessage.indexOf('{');
+  const lastBrace = rawMessage.lastIndexOf('}');
+  if (firstBrace !== -1 && lastBrace > firstBrace) {
+    try {
+      const parsed = JSON.parse(rawMessage.slice(firstBrace, lastBrace + 1));
+      const nested = parsed?.error || parsed;
+      if (typeof nested?.code === 'number') status = nested.code;
+      if (typeof nested?.status === 'string') upstreamStatus = nested.status;
+    } catch {
+      // Ignore non-JSON error fragments
+    }
+  }
+
+  if (
+    upstreamStatus === 'UNAVAILABLE' ||
+    /\b503\b/.test(rawMessage) ||
+    /high demand|temporarily unavailable/i.test(rawMessage)
+  ) {
+    status = 503;
+    upstreamStatus = 'UNAVAILABLE';
+  } else if (/quota|rate limit|429|RESOURCE_EXHAUSTED/i.test(rawMessage) && status === 502) {
+    status = 429;
+  }
+
+  return { status, upstreamStatus, message: rawMessage };
+}
+
+function sleepMs(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+app.post('/api/posts/margin-note', async (req: Request, res: Response) => {
+  const bearerToken = getBearerToken(req);
+  const verifiedUser = await verifyFirebaseIdToken(bearerToken);
+  if (!verifiedUser) {
+    return res.status(401).json({ error: 'Authentication required.' });
+  }
+
+  if (!checkMarginNoteRateLimit(verifiedUser.uid)) {
+    return res
+      .status(429)
+      .json({ error: 'Rate limit exceeded. Please try again later.', retryable: true });
+  }
+
+  const rawTitle = typeof req.body?.title === 'string' ? req.body.title.trim().slice(0, 140) : '';
+  const rawBody = typeof req.body?.body === 'string' ? req.body.body.trim().slice(0, 4000) : '';
+  const force = req.body?.force === true;
+
+  if (!rawTitle && !rawBody) {
+    if (force) {
+      return res
+        .status(400)
+        .json({ error: 'Post needs text or a link to create a margin note.', retryable: false });
+    }
+    return res.json({ shouldGenerate: false, points: [] });
+  }
+
+  const apiKey = (process.env.GEMINI_API_KEY || '').trim();
+  if (!apiKey) {
+    return res
+      .status(503)
+      .json({ error: 'Margin note service is unavailable.', retryable: false });
+  }
+
+  const combinedText = [rawTitle, rawBody].filter(Boolean).join('\n\n');
+  const urls = extractUniqueUrls(combinedText);
+
+  const systemInstruction = force
+    ? [
+        'You write ultra-concise editorial margin notes for B2B freight brokerage sales closers.',
+        'The user explicitly requested a margin note for this post, so you MUST always return shouldGenerate=true with 1 to 3 crisp, practical bullet strings in "points" (each under 200 characters).',
+        'Extract the sharpest sales takeaway, actionable follow-up angle, key link insight, or practical freight context from the post.',
+        'Start directly with the useful content like a sharp peer closer note.',
+        'STRICTLY NEVER use the words "Gemini", "AI", "YouTube", "Summary", "Takeaways", "Generated by", or label prefixes like "Tip:" or "Note:".',
+      ].join(' ')
+    : [
+        'You write ultra-concise editorial margin notes for B2B freight brokerage sales closers.',
+        'First decide whether the post contains genuine actionable value for freight closers:',
+        '- Cold-calling openers, call scripts, talk tracks, or objection handling',
+        '- Educational or industry video/article links (extract the core practical points or key freight/sales insight directly)',
+        '- Sales mindset, resilience, negotiation tactics, rate quoting, or carrier/shipper tips',
+        'Return shouldGenerate=false and points=[] for casual chatter, memes, jokes, lunch/food banter, greetings, or short off-topic remarks with no sales/educational substance.',
+        'When shouldGenerate=true, output 2 to 3 crisp, practical bullet strings in "points" (each under 200 characters).',
+        'Start directly with the actionable insight like a sharp peer closer note.',
+        'STRICTLY NEVER use the words "Gemini", "AI", "YouTube", "Summary", "Takeaways", "Generated by", or label prefixes like "Tip:" or "Note:".',
+      ].join(' ');
+
+  const prompt = [
+    force
+      ? 'Write a concise closer margin note for this team feed post and return ONLY valid JSON matching {"shouldGenerate": true, "points": string[]}:'
+      : 'Evaluate this team feed post and return ONLY valid JSON matching {"shouldGenerate": boolean, "points": string[]}:',
+    rawTitle ? `Title: ${rawTitle}` : null,
+    rawBody ? `Body: ${rawBody}` : null,
+    urls.length > 0 ? `Referenced links to inspect: ${urls.join(', ')}` : null,
+  ]
+    .filter(Boolean)
+    .join('\n');
+
+  const ai = new GoogleGenAI({
+    apiKey,
+    httpOptions: { headers: { 'User-Agent': 'aistudio-build' } },
+  });
+
+  const runGeneration = () =>
+    urls.length > 0
+      ? ai.models.generateContent({
+          model: 'gemini-4-hydrogen',
+          contents: prompt,
+          config: {
+            systemInstruction,
+            tools: [{ googleSearch: {} }, { urlContext: {} }],
+          },
+        })
+      : ai.models.generateContent({
+          model: 'gemini-4-hydrogen',
+          contents: prompt,
+          config: {
+            systemInstruction,
+            responseMimeType: 'application/json',
+            responseSchema: {
+              type: Type.OBJECT,
+              properties: {
+                shouldGenerate: { type: Type.BOOLEAN },
+                points: {
+                  type: Type.ARRAY,
+                  items: { type: Type.STRING },
+                },
+              },
+              required: ['shouldGenerate', 'points'],
+            },
+          },
+        });
+
+  try {
+    let response;
+    try {
+      response = await runGeneration();
+    } catch (firstErr: any) {
+      const info = extractUpstreamError(firstErr);
+      if (info.status === 503) {
+        await sleepMs(900);
+        response = await runGeneration();
+      } else {
+        throw firstErr;
+      }
+    }
+
+    const parsed = parseMarginNoteJson(response.text || '');
+    if (!parsed) {
+      return res.json({ shouldGenerate: false, points: [] });
+    }
+    return res.json(parsed);
+  } catch (err: any) {
+    const info = extractUpstreamError(err);
+    if (info.status === 503) {
+      return res.status(503).json({
+        error: 'The AI is currently being overused (high demand). Please try again in a moment.',
+        code: 503,
+        status: 'UNAVAILABLE',
+        retryable: true,
+      });
+    }
+    if (info.status === 429) {
+      return res.status(429).json({
+        error: 'The AI rate limit was reached right now. Please try again shortly.',
+        code: 429,
+        retryable: true,
+      });
+    }
+    if (info.status === 401 || info.status === 403) {
+      return res.status(403).json({
+        error: 'Upstream AI authorization error.',
+        code: info.status,
+        retryable: false,
+      });
+    }
+    console.error('Margin note generation error:', info.message);
+    return res.status(502).json({
+      error: 'The AI service failed to respond properly right now. Please try again.',
+      code: 502,
+      retryable: true,
+    });
+  }
+});
+
+app.use('/api', (_req: Request, res: Response) => {
+  return res.status(404).json({
+    error: 'API route not found (404). Server may need a restart.',
+    retryable: true,
+  });
+});
+
+app.use('/api', (err: any, _req: Request, res: Response, _next: NextFunction) => {
+  const status = typeof err?.status === 'number' ? err.status : 500;
+  return res.status(status).json({
+    error:
+      typeof err?.message === 'string' && err.message.trim()
+        ? err.message.trim()
+        : `Server error (${status}).`,
+    retryable: status >= 500,
+  });
 });
 
 async function startServer() {

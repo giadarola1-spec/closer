@@ -160,6 +160,17 @@
           "type": "string",
           "maxLength": 128
         },
+        "marginNote": {
+          "type": "object",
+          "description": "Optional selective contextual margin note ({ points: string[] }) cached directly on the post document.",
+          "properties": {
+            "points": {
+              "type": "array",
+              "description": "1 to 3 concise margin note points for closers."
+            }
+          },
+          "required": ["points"]
+        },
         "createdAt": {
           "type": "string",
           "format": "date-time"

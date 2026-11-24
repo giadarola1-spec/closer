@@ -15,6 +15,8 @@ export const LIMITS = {
   DM_PREVIEW_MAX: 500,
   DM_BODY_MAX: 4000,
   DRAWBOARD_POINTS_MAX: 500,
+  MARGIN_NOTE_POINTS_MAX: 3,
+  MARGIN_NOTE_POINT_MAX: 280,
 } as const;
 
 export type PostCategory = 'post' | 'message' | 'idea' | 'mql' | 'sql' | 'opening';
@@ -22,6 +24,10 @@ export type EquipmentType = '' | 'Dry Van' | 'Reefer' | 'Both';
 export type StageStatus = 'open' | 'in_progress' | 'won' | 'archived';
 
 export type SidebarChannel = 'feed' | 'messages' | 'roster';
+
+export interface PostMarginNote {
+  points: string[];
+}
 
 export interface TeamMember {
   id: string;
@@ -53,6 +59,7 @@ export interface TeamPost {
   replyCount: number;
   likeCount: number;
   lastCommentId: string;
+  marginNote?: PostMarginNote | null;
   createdAt: any;
   updatedAt: any;
 }

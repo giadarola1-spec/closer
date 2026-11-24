@@ -9,6 +9,7 @@ import {
   setDoc,
   updateDoc,
   deleteDoc,
+  deleteField,
   serverTimestamp,
   increment,
 } from 'firebase/firestore';
@@ -33,8 +34,9 @@ import {
   Check,
   Plus,
   AtSign,
+  StickyNote,
 } from 'lucide-react';
-import { db, OperationType, handleFirestoreError } from '../firebase.ts';
+import { auth, db, OperationType, handleFirestoreError } from '../firebase.ts';
 import {
   TEAM_ID,
   ACCEPTED_TEAM_IDS,
@@ -46,6 +48,13 @@ import {
 import { Avatar } from './Avatar.tsx';
 import { SupervisorBadge } from './SupervisorBadge.tsx';
 import { MentionSuggestions } from './MentionSuggestions.tsx';
+import {
+  DesktopMarginNote,
+  MobileMarginNote,
+  DesktopMarginNoteStatus,
+  MobileMarginNoteStatus,
+  MarginNoteRequestStatus,
+} from './MarginNote.tsx';
 import { TweetCard, TweetSkeleton } from '@/components/ui/tweet-card';
 import {
   MAX_POST_IMAGE_BYTES,
@@ -141,6 +150,147 @@ function scorePostRelevance(
   const ageHours = Math.max(0, (nowMs - getPostMillis(post, nowMs)) / 3_600_000);
   const baseScore = 2 + engagement + pinnedBoost + mediaBoost + titleBoost + searchBoost;
   return baseScore / Math.pow(ageHours + 2, 1.25);
+}
+
+type MarginNoteGenResult =
+  | { ok: true; saved: boolean }
+  | { ok: false; error: string; retryable: boolean };
+
+async function generateAndSaveMarginNote(
+  postId: string,
+  title: string,
+  body: string,
+  force: boolean = false
+): Promise<MarginNoteGenResult> {
+  if (!title.trim() && !body.trim()) {
+    if (force) {
+      return {
+        ok: false,
+        error: 'Add post text or a link first.',
+        retryable: false,
+      };
+    }
+    return { ok: true, saved: false };
+  }
+
+  try {
+    const idToken = await auth.currentUser?.getIdToken();
+    if (!idToken) {
+      return {
+        ok: false,
+        error: 'Sign in again to generate a margin note.',
+        retryable: false,
+      };
+    }
+
+    const response = await fetch('/api/posts/margin-note', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${idToken}`,
+      },
+      body: JSON.stringify({ title, body, force }),
+    });
+
+    const rawText = await response.text();
+    const contentType = response.headers.get('content-type') || '';
+    const trimmed = rawText.trim();
+    const looksLikeHtml =
+      trimmed.startsWith('<') ||
+      (!contentType.includes('application/json') && /<!doctype|<html/i.test(trimmed));
+
+    let parsedBody: {
+      shouldGenerate?: boolean;
+      points?: unknown;
+      error?: string;
+      retryable?: boolean;
+    } | null = null;
+
+    if (!looksLikeHtml && trimmed) {
+      try {
+        parsedBody = JSON.parse(trimmed);
+      } catch {
+        parsedBody = null;
+      }
+    }
+
+    if (!response.ok || looksLikeHtml || !parsedBody) {
+      if (
+        response.status === 503 ||
+        /503|UNAVAILABLE|high demand|overloaded|capacity/i.test(trimmed)
+      ) {
+        return {
+          ok: false,
+          error:
+            parsedBody?.error ||
+            'The AI is currently being overused (high demand). Please try again in a moment.',
+          retryable: true,
+        };
+      }
+
+      if (response.status === 429) {
+        return {
+          ok: false,
+          error:
+            parsedBody?.error ||
+            'The AI rate limit was reached right now. Please try again shortly.',
+          retryable: true,
+        };
+      }
+
+      if (looksLikeHtml) {
+        return {
+          ok: false,
+          error: `Backend returned HTML instead of JSON (HTTP ${response.status}) — the API server may be restarting or unavailable on this URL.`,
+          retryable: true,
+        };
+      }
+
+      return {
+        ok: false,
+        error:
+          parsedBody?.error ||
+          `The AI service returned an unexpected response (HTTP ${response.status}).`,
+        retryable:
+          typeof parsedBody?.retryable === 'boolean'
+            ? parsedBody.retryable
+            : response.status >= 500,
+      };
+    }
+
+    const data = parsedBody;
+
+    if (!data?.shouldGenerate || !Array.isArray(data.points)) {
+      return { ok: true, saved: false };
+    }
+
+    const cleanPoints = data.points
+      .filter((item): item is string => typeof item === 'string')
+      .map((line) => line.trim().slice(0, LIMITS.MARGIN_NOTE_POINT_MAX))
+      .filter(Boolean)
+      .slice(0, LIMITS.MARGIN_NOTE_POINTS_MAX);
+
+    if (cleanPoints.length === 0) {
+      return { ok: true, saved: false };
+    }
+
+    await updateDoc(doc(db, 'posts', postId), {
+      marginNote: { points: cleanPoints },
+      updatedAt: serverTimestamp(),
+    });
+    return { ok: true, saved: true };
+  } catch (err) {
+    const message =
+      err instanceof Error && err.message
+        ? err.message
+        : 'Margin note request failed unexpectedly.';
+    console.warn('Margin note evaluation error:', message);
+    return {
+      ok: false,
+      error: message,
+      retryable: true,
+    };
+  }
 }
 
 function buildTweetFromPost(
@@ -320,6 +470,9 @@ interface PostCardProps {
   membersByHandle: Record<string, TeamMember>;
   supervisorIds: Set<string>;
   isSupervisor: boolean;
+  marginNoteStatus?: MarginNoteRequestStatus;
+  onRequestMarginNote: (force: boolean) => void;
+  onDismissMarginNoteStatus: () => void;
   onCopyText: (text: string, label: string) => void;
   onOpenDm: (targetUid: string) => void;
   onNotify: (msg: string) => void;
@@ -333,6 +486,9 @@ const PostCard: React.FC<PostCardProps> = ({
   membersByHandle,
   supervisorIds,
   isSupervisor,
+  marginNoteStatus,
+  onRequestMarginNote,
+  onDismissMarginNoteStatus,
   onCopyText,
   onOpenDm,
   onNotify,
@@ -351,12 +507,14 @@ const PostCard: React.FC<PostCardProps> = ({
   const [replyMentionIndex, setReplyMentionIndex] = useState(0);
   const [confirmDeletePost, setConfirmDeletePost] = useState(false);
   const [deleteBusy, setDeleteBusy] = useState(false);
+  const [removingMarginNote, setRemovingMarginNote] = useState(false);
 
   const replyInputRef = useRef<HTMLInputElement | null>(null);
 
   const isAuthor = post.authorId === currentMember.uid;
   const canModeratePost = isAuthor || isSupervisor;
   const isArchived = post.stageStatus === 'archived';
+  const canRemoveMarginNote = isSupervisor || (isAuthor && !isArchived);
   const authorMember = membersById[post.authorId];
   const displayAuthorName = authorMember?.displayName || post.authorName;
   const authorIsSupervisor = supervisorIds.has(post.authorId);
@@ -505,6 +663,22 @@ const PostCard: React.FC<PostCardProps> = ({
     } catch (error) {
       setDeleteBusy(false);
       handleFirestoreError(error, OperationType.DELETE, `posts/${post.id}`);
+    }
+  };
+
+  const handleRemoveMarginNote = async () => {
+    if (!canRemoveMarginNote || removingMarginNote) return;
+    setRemovingMarginNote(true);
+    try {
+      await updateDoc(doc(db, 'posts', post.id), {
+        marginNote: deleteField(),
+        updatedAt: serverTimestamp(),
+      });
+      onNotify('Margin note removed');
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, `posts/${post.id}`);
+    } finally {
+      setRemovingMarginNote(false);
     }
   };
 
@@ -707,6 +881,29 @@ const PostCard: React.FC<PostCardProps> = ({
             <Copy className="w-3.5 h-3.5" />
             <span>Copy</span>
           </button>
+
+          {!(post.marginNote && Array.isArray(post.marginNote.points) && post.marginNote.points.length > 0) &&
+            Boolean(post.title?.trim() || post.body?.trim()) &&
+            (!isArchived || isSupervisor) && (
+              <button
+                type="button"
+                onClick={() => onRequestMarginNote(true)}
+                disabled={marginNoteStatus?.status === 'generating'}
+                className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-[#141413] border border-[#262624] text-[#9c9a92] hover:text-white hover:border-[#363632] disabled:opacity-50 transition-colors"
+                title="Add a margin note to this post"
+              >
+                {marginNoteStatus?.status === 'generating' ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                ) : (
+                  <StickyNote className="w-3.5 h-3.5" />
+                )}
+                <span>
+                  {marginNoteStatus?.status === 'generating'
+                    ? 'Adding...'
+                    : 'Margin note'}
+                </span>
+              </button>
+            )}
         </div>
 
         {authorMember && (
@@ -845,25 +1042,69 @@ const PostCard: React.FC<PostCardProps> = ({
     </>
   );
 
+  const activeMarginNote =
+    post.marginNote && Array.isArray(post.marginNote.points) && post.marginNote.points.length > 0
+      ? post.marginNote
+      : null;
+
   return (
-    <TweetCard
-      tweet={tweetPayload}
-      logo="closer"
-      title={post.title || undefined}
-      imageUrl={safeImageUrl || null}
-      timestamp={formatRelativeTime(post.createdAt)}
-      pinned={post.pinned}
-      authorBadge={authorIsSupervisor ? <SupervisorBadge compact /> : undefined}
-      headerActions={headerActions}
-      footer={footerContent}
-      onAuthorClick={authorMember ? () => onOpenDm(post.authorId) : undefined}
-      onMentionClick={(handle) => {
-        const target = resolveMentionedMember(handle, membersByHandle);
-        if (target) {
-          onOpenDm(target.uid);
-        }
-      }}
-    />
+    <div className="min-[1120px]:grid min-[1120px]:grid-cols-[minmax(0,640px)_minmax(288px,368px)] min-[1120px]:items-start">
+      <div className="min-w-0">
+        <TweetCard
+          tweet={tweetPayload}
+          logo="closer"
+          title={post.title || undefined}
+          imageUrl={safeImageUrl || null}
+          timestamp={formatRelativeTime(post.createdAt)}
+          pinned={post.pinned}
+          authorBadge={authorIsSupervisor ? <SupervisorBadge compact /> : undefined}
+          headerActions={headerActions}
+          footer={footerContent}
+          onAuthorClick={authorMember ? () => onOpenDm(post.authorId) : undefined}
+          onMentionClick={(handle) => {
+            const target = resolveMentionedMember(handle, membersByHandle);
+            if (target) {
+              onOpenDm(target.uid);
+            }
+          }}
+        />
+        {activeMarginNote ? (
+          <MobileMarginNote
+            marginNote={activeMarginNote}
+            canRemove={canRemoveMarginNote}
+            removing={removingMarginNote}
+            onCopyText={onCopyText}
+            onRemove={handleRemoveMarginNote}
+          />
+        ) : (
+          marginNoteStatus && (
+            <MobileMarginNoteStatus
+              requestState={marginNoteStatus}
+              onRetry={() => onRequestMarginNote(Boolean(marginNoteStatus.force))}
+              onDismiss={onDismissMarginNoteStatus}
+            />
+          )
+        )}
+      </div>
+
+      {activeMarginNote ? (
+        <DesktopMarginNote
+          marginNote={activeMarginNote}
+          canRemove={canRemoveMarginNote}
+          removing={removingMarginNote}
+          onCopyText={onCopyText}
+          onRemove={handleRemoveMarginNote}
+        />
+      ) : (
+        marginNoteStatus && (
+          <DesktopMarginNoteStatus
+            requestState={marginNoteStatus}
+            onRetry={() => onRequestMarginNote(Boolean(marginNoteStatus.force))}
+            onDismiss={onDismissMarginNoteStatus}
+          />
+        )
+      )}
+    </div>
   );
 };
 
@@ -897,9 +1138,81 @@ export const TeamFeedView: React.FC<TeamFeedViewProps> = ({
   const [composerMentionQuery, setComposerMentionQuery] =
     useState<ActiveMentionQuery | null>(null);
   const [composerMentionIndex, setComposerMentionIndex] = useState(0);
+  const [marginNoteStateByPostId, setMarginNoteStateByPostId] = useState<
+    Record<string, MarginNoteRequestStatus>
+  >({});
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const sortMenuRef = useRef<HTMLDivElement | null>(null);
+
+  const handleRequestMarginNote = async (
+    postId: string,
+    postTitle: string,
+    postBody: string,
+    force: boolean
+  ) => {
+    if (force) {
+      setMarginNoteStateByPostId((prev) => ({
+        ...prev,
+        [postId]: { status: 'generating', force: true },
+      }));
+    } else {
+      setMarginNoteStateByPostId((prev) => {
+        if (!prev[postId]) return prev;
+        const next = { ...prev };
+        delete next[postId];
+        return next;
+      });
+    }
+
+    const result = await generateAndSaveMarginNote(postId, postTitle, postBody, force);
+
+    if (result.ok) {
+      if (!result.saved && force) {
+        setMarginNoteStateByPostId((prev) => ({
+          ...prev,
+          [postId]: {
+            status: 'error',
+            message: 'Could not extract a margin note from this post.',
+            retryable: true,
+            force: true,
+          },
+        }));
+        return;
+      }
+
+      setMarginNoteStateByPostId((prev) => {
+        if (!prev[postId]) return prev;
+        const next = { ...prev };
+        delete next[postId];
+        return next;
+      });
+
+      if (result.saved && force) {
+        onNotify('Margin note added');
+      }
+      return;
+    }
+
+    setMarginNoteStateByPostId((prev) => ({
+      ...prev,
+      [postId]: {
+        status: 'error',
+        message: result.error,
+        retryable: result.retryable,
+        force,
+      },
+    }));
+  };
+
+  const handleDismissMarginNoteStatus = (postId: string) => {
+    setMarginNoteStateByPostId((prev) => {
+      if (!prev[postId]) return prev;
+      const next = { ...prev };
+      delete next[postId];
+      return next;
+    });
+  };
 
   useEffect(() => {
     if (composerOpenNonce > 0) {
@@ -1021,6 +1334,7 @@ export const TeamFeedView: React.FC<TeamFeedViewProps> = ({
       setIsUploadingImage(false);
     }
 
+    const cleanTitle = title.trim().slice(0, LIMITS.TITLE_MAX);
     const postRef = doc(collection(db, 'posts'));
 
     try {
@@ -1029,7 +1343,7 @@ export const TeamFeedView: React.FC<TeamFeedViewProps> = ({
         authorId: currentMember.uid,
         authorName: currentMember.displayName.slice(0, LIMITS.DISPLAY_NAME_MAX),
         category: 'post',
-        title: title.trim().slice(0, LIMITS.TITLE_MAX),
+        title: cleanTitle,
         body: cleanBody,
         imageUrl: uploadedImageUrl,
         lane: '',
@@ -1049,6 +1363,8 @@ export const TeamFeedView: React.FC<TeamFeedViewProps> = ({
       handleClearSelectedImage();
       setIsComposerOpen(false);
       onNotify('Post shared');
+
+      void handleRequestMarginNote(postRef.id, cleanTitle, cleanBody, false);
     } catch (error) {
       handleFirestoreError(error, OperationType.CREATE, `posts/${postRef.id}`);
     } finally {
@@ -1219,9 +1535,9 @@ export const TeamFeedView: React.FC<TeamFeedViewProps> = ({
   );
 
   return (
-    <div className="w-full max-w-[680px] py-6 sm:py-8 px-4 sm:px-6 space-y-5 font-['Inter']">
-      {/* Full-Width Search + Alerts + New Post */}
-      <div className="flex flex-wrap sm:flex-nowrap items-center gap-2 w-full">
+    <div className="w-full max-w-[1060px] py-6 sm:py-8 px-4 sm:px-6 space-y-5 font-['Inter']">
+      {/* Search + Alerts + New Post (aligned to left post column width) */}
+      <div className="flex flex-wrap sm:flex-nowrap items-center gap-2 w-full max-w-[640px]">
         <div className="relative flex-1 min-w-[200px]">
           <Search className="w-3.5 h-3.5 text-[#71706b] absolute left-3 top-1/2 -translate-y-1/2" />
           <input
@@ -1294,7 +1610,7 @@ export const TeamFeedView: React.FC<TeamFeedViewProps> = ({
         {isComposerOpen && (
           <form
             onSubmit={handlePublish}
-            className="w-full bg-[#191918] border border-[#2a2a27] rounded-2xl p-4 focus-within:border-[#42423e] transition-colors space-y-2.5"
+            className="w-full max-w-[640px] bg-[#191918] border border-[#2a2a27] rounded-2xl p-4 focus-within:border-[#42423e] transition-colors space-y-2.5"
           >
               <div className="flex items-center justify-between gap-2 pb-1">
                 <span className="text-xs font-medium text-[#edece8]">New post</span>
@@ -1488,7 +1804,7 @@ export const TeamFeedView: React.FC<TeamFeedViewProps> = ({
 
           {/* Feed Filter Tabs + Side Sort Selector */}
           {!isLoadingPosts && posts.length > 0 && (
-            <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex flex-wrap items-center justify-between gap-2 w-full max-w-[640px]">
               <div className="inline-flex items-center p-0.5 bg-[#191918] border border-[#262624] rounded-xl">
                 <button
                   type="button"
@@ -1585,15 +1901,15 @@ export const TeamFeedView: React.FC<TeamFeedViewProps> = ({
             </div>
           )}
 
-          {/* Single-Column Feed Stream */}
+          {/* Feed Stream (Left post column + selective tethered margin notes on right) */}
           {isLoadingPosts ? (
-            <div className="space-y-3 pb-10" aria-busy="true" aria-label="Loading posts">
+            <div className="space-y-3 pb-10 max-w-[640px]" aria-busy="true" aria-label="Loading posts">
               <TweetSkeleton />
               <TweetSkeleton />
               <TweetSkeleton />
             </div>
           ) : filteredPosts.length === 0 ? (
-            <div className="bg-[#191918] border border-[#262624] rounded-2xl p-8 text-center space-y-2.5 animate-fade-150">
+            <div className="max-w-[640px] bg-[#191918] border border-[#262624] rounded-2xl p-8 text-center space-y-2.5 animate-fade-150">
               <p className="text-sm text-[#edece8] font-medium">
                 {feedFilter === 'pinned' && !searchQuery
                   ? 'No pinned posts'
@@ -1646,6 +1962,18 @@ export const TeamFeedView: React.FC<TeamFeedViewProps> = ({
                   membersByHandle={membersByHandle}
                   supervisorIds={supervisorIds}
                   isSupervisor={isSupervisor}
+                  marginNoteStatus={marginNoteStateByPostId[post.id]}
+                  onRequestMarginNote={(force) =>
+                    void handleRequestMarginNote(
+                      post.id,
+                      post.title || '',
+                      post.body || '',
+                      force
+                    )
+                  }
+                  onDismissMarginNoteStatus={() =>
+                    handleDismissMarginNoteStatus(post.id)
+                  }
                   onCopyText={onCopyText}
                   onOpenDm={onOpenDm}
                   onNotify={onNotify}

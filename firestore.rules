@@ -104,6 +104,25 @@ service cloud.firestore {
         && data.updatedAt is timestamp;
     }
 
+    function isValidMarginNote(note) {
+      return note is map
+        && note.keys().hasAll(['points'])
+        && note.keys().hasOnly(['points'])
+        && note.points is list
+        && note.points.size() >= 1
+        && note.points.size() <= 3
+        && note.points[0] is string
+        && note.points[0].size() >= 1
+        && note.points[0].size() <= 280
+        && note.points[note.points.size() - 1] is string
+        && note.points[note.points.size() - 1].size() >= 1
+        && note.points[note.points.size() - 1].size() <= 280
+        && (
+          note.points.size() < 3
+          || (note.points[1] is string && note.points[1].size() >= 1 && note.points[1].size() <= 280)
+        );
+    }
+
     function isValidPost(data) {
       return data.keys().hasAll([
           'teamId', 'authorId', 'authorName', 'category', 'title', 'body',
@@ -113,7 +132,7 @@ service cloud.firestore {
         && data.keys().hasOnly([
           'teamId', 'authorId', 'authorName', 'category', 'title', 'body', 'imageUrl',
           'lane', 'equipment', 'loadsPerWeek', 'stageStatus', 'pinned',
-          'replyCount', 'likeCount', 'lastCommentId', 'createdAt', 'updatedAt'
+          'replyCount', 'likeCount', 'lastCommentId', 'marginNote', 'createdAt', 'updatedAt'
         ])
         && isValidTeamId(data.teamId)
         && isValidId(data.authorId)
@@ -140,6 +159,7 @@ service cloud.firestore {
         && data.replyCount is int && data.replyCount >= 0
         && data.likeCount is int && data.likeCount >= 0
         && data.lastCommentId is string && data.lastCommentId.size() <= 128
+        && (!('marginNote' in data) || isValidMarginNote(data.marginNote))
         && data.createdAt is timestamp
         && data.updatedAt is timestamp;
     }
@@ -544,7 +564,7 @@ service cloud.firestore {
             && incoming().likeCount == existing().likeCount
             && incoming().lastCommentId == existing().lastCommentId
             && incoming().diff(existing()).affectedKeys().hasOnly([
-              'category', 'title', 'body', 'lane', 'equipment', 'loadsPerWeek', 'stageStatus', 'pinned', 'updatedAt'
+              'category', 'title', 'body', 'lane', 'equipment', 'loadsPerWeek', 'stageStatus', 'pinned', 'marginNote', 'updatedAt'
             ])
           )
           || (
@@ -593,6 +613,18 @@ service cloud.firestore {
             && incoming().diff(existing()).affectedKeys().hasOnly(['replyCount', 'lastCommentId', 'updatedAt'])
             && exists(/databases/$(database)/documents/posts/$(postId)/comments/$(incoming().lastCommentId))
             && !existsAfter(/databases/$(database)/documents/posts/$(postId)/comments/$(incoming().lastCommentId))
+          )
+          || (
+            // Action 7: Author/Supervisor manages marginNote; verified team members can backfill missing marginNote
+            incoming().replyCount == existing().replyCount
+            && incoming().likeCount == existing().likeCount
+            && incoming().lastCommentId == existing().lastCommentId
+            && incoming().diff(existing()).affectedKeys().hasOnly(['marginNote', 'updatedAt'])
+            && (
+              (existing().authorId == request.auth.uid && existing().stageStatus != 'archived')
+              || isSupervisor()
+              || (isTeamMember() && existing().stageStatus != 'archived' && !('marginNote' in existing()) && ('marginNote' in incoming()))
+            )
           )
         );
       allow delete: if isVerified() && isValidId(postId) && (
