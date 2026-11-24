@@ -13,7 +13,6 @@ import {
   X,
   Shield,
   ShieldCheck,
-  BarChart3,
 } from 'lucide-react';
 import { SidebarChannel, TeamMember } from '../types/team.ts';
 import { Avatar } from './Avatar.tsx';
@@ -51,7 +50,6 @@ const NAV_ITEMS: {
   { id: 'feed', label: 'Feed', icon: MessageSquare },
   { id: 'messages', label: 'Messages', icon: Send },
   { id: 'roster', label: 'Closers', icon: Users },
-  { id: 'statistics', label: 'Statistics', icon: BarChart3 },
 ];
 
 export const Sidebar: React.FC<SidebarProps> = ({

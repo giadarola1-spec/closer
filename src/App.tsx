@@ -37,7 +37,6 @@ import { Sidebar } from './components/Sidebar.tsx';
 import { TeamFeedView } from './components/TeamFeedView.tsx';
 import { RosterView } from './components/RosterView.tsx';
 import { DirectMessagesView } from './components/DirectMessagesView.tsx';
-import { StatisticsView } from './components/StatisticsView.tsx';
 import { NotificationSettingsModal } from './components/NotificationSettingsModal.tsx';
 import { SupervisorModal } from './components/SupervisorModal.tsx';
 import { PostNotificationBanner } from './components/PostNotificationBanner.tsx';
@@ -1022,14 +1021,6 @@ export default function App() {
               supervisorIds={supervisorIds}
               selectedUserId={selectedDmUserId}
               onSelectUser={(uid) => setSelectedDmUserId(uid)}
-              onNotify={showToast}
-            />
-          ) : activeChannel === 'statistics' ? (
-            <StatisticsView
-              currentMember={currentMember}
-              members={members}
-              isSupervisor={isSupervisor}
-              supervisorToken={supervisorToken}
               onNotify={showToast}
             />
           ) : (
