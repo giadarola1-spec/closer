@@ -71,6 +71,7 @@ export default function App() {
   const [threads, setThreads] = useState<DirectThread[]>([]);
   const [supervisors, setSupervisors] = useState<SupervisorRecord[]>([]);
   const [isLoadingPosts, setIsLoadingPosts] = useState(true);
+  const [isLoadingMembers, setIsLoadingMembers] = useState(true);
 
   const [supervisorToken, setSupervisorToken] = useState<string | null>(null);
   const [supervisorStatusMode, setSupervisorStatusMode] = useState<
@@ -171,6 +172,7 @@ export default function App() {
         knownPostIdsRef.current.clear();
         initialPostsLoadedRef.current = false;
         setIsLoadingPosts(false);
+        setIsLoadingMembers(false);
       } else {
         setNotificationPrefs(loadCachedNotificationPrefs(nextUser.uid));
       }
@@ -330,6 +332,7 @@ export default function App() {
     if (!authReady || !user || !user.emailVerified || !profileReady) return;
 
     setIsLoadingPosts(true);
+    setIsLoadingMembers(true);
 
     const membersQuery = query(
       collection(db, 'members'),
@@ -340,8 +343,10 @@ export default function App() {
       (snap) => {
         const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }) as TeamMember);
         setMembers(list);
+        setIsLoadingMembers(false);
       },
       (error) => {
+        setIsLoadingMembers(false);
         handleFirestoreError(error, OperationType.LIST, 'members');
       }
     );
@@ -941,6 +946,7 @@ export default function App() {
         dmCount={threads.length}
         memberCount={members.length || 1}
         members={members}
+        isLoadingMembers={isLoadingMembers}
         selectedDmUserId={selectedDmUserId}
         onOpenDm={handleOpenDm}
         notificationsEnabled={notificationPrefs.postNotificationsEnabled}
@@ -1001,6 +1007,7 @@ export default function App() {
             <DirectMessagesView
               currentMember={currentMember}
               members={members}
+              isLoadingMembers={isLoadingMembers}
               threads={threads}
               supervisorIds={supervisorIds}
               selectedUserId={selectedDmUserId}

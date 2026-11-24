@@ -28,6 +28,7 @@ import { SupervisorBadge } from './SupervisorBadge.tsx';
 interface DirectMessagesViewProps {
   currentMember: TeamMember;
   members: TeamMember[];
+  isLoadingMembers?: boolean;
   threads: DirectThread[];
   supervisorIds?: Set<string>;
   selectedUserId: string | null;
@@ -87,6 +88,7 @@ function formatDayDivider(ts: any): string {
 export const DirectMessagesView: React.FC<DirectMessagesViewProps> = ({
   currentMember,
   members,
+  isLoadingMembers = false,
   threads,
   supervisorIds,
   selectedUserId,
@@ -328,55 +330,72 @@ export const DirectMessagesView: React.FC<DirectMessagesViewProps> = ({
         </div>
 
         <div className="flex-1 overflow-y-auto p-2 space-y-1">
-          {sortedPeople.map((person) => {
-            const isSelected = activeRecipient.uid === person.uid;
-            const thread = threadsByPeerId[person.uid];
-            const isMe = person.uid === currentMember.uid;
-            const previewPrefix =
-              thread && thread.lastSenderId === currentMember.uid ? 'You: ' : '';
-
-            return (
-              <button
-                key={person.uid}
-                type="button"
-                onClick={() => handleSelectPerson(person.uid)}
-                className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-left transition-colors ${
-                  isSelected
-                    ? 'bg-[#1f1f1e] border border-[#2f2f2c]'
-                    : 'border border-transparent hover:bg-[#191918]'
-                }`}
-              >
-                <Avatar
-                  name={person.displayName}
-                  photoUrl={person.photoUrl}
-                  size="sm"
-                />
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center justify-between gap-2">
-                    <div className="flex items-center gap-1.5 min-w-0">
-                      <span className="text-xs font-medium text-[#edece8] truncate">
-                        {person.displayName}
-                        {isMe ? ' (You)' : ''}
-                      </span>
-                      {supervisorIds?.has(person.uid) && (
-                        <SupervisorBadge compact />
-                      )}
-                    </div>
-                    {thread?.lastMessageAt && (
-                      <span className="text-[10px] text-[#71706b] shrink-0 tabular-nums">
-                        {formatShortTime(thread.lastMessageAt)}
-                      </span>
-                    )}
-                  </div>
-                  <p className="text-[11px] text-[#8d8c85] truncate mt-0.5">
-                    {thread
-                      ? `${previewPrefix}${thread.lastMessageText}`
-                      : person.statusText || 'On the phones'}
-                  </p>
+          {isLoadingMembers ? (
+            <div className="space-y-1" aria-busy="true" aria-label="Loading closers">
+              {[0, 1, 2, 3].map((idx) => (
+                <div
+                  key={idx}
+                  aria-hidden="true"
+                  className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl"
+                >
+                  <div className="w-6 h-6 rounded-full skeleton-shimmer shrink-0" />
+                  <div className="w-[100px] h-3 rounded-md skeleton-shimmer" />
                 </div>
-              </button>
-            );
-          })}
+              ))}
+            </div>
+          ) : (
+            <div className="space-y-1 animate-fade-150">
+              {sortedPeople.map((person) => {
+                const isSelected = activeRecipient.uid === person.uid;
+                const thread = threadsByPeerId[person.uid];
+                const isMe = person.uid === currentMember.uid;
+                const previewPrefix =
+                  thread && thread.lastSenderId === currentMember.uid ? 'You: ' : '';
+
+                return (
+                  <button
+                    key={person.uid}
+                    type="button"
+                    onClick={() => handleSelectPerson(person.uid)}
+                    className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-left transition-colors ${
+                      isSelected
+                        ? 'bg-[#1f1f1e] border border-[#2f2f2c]'
+                        : 'border border-transparent hover:bg-[#191918]'
+                    }`}
+                  >
+                    <Avatar
+                      name={person.displayName}
+                      photoUrl={person.photoUrl}
+                      size="sm"
+                    />
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-1.5 min-w-0">
+                          <span className="text-xs font-medium text-[#edece8] truncate">
+                            {person.displayName}
+                            {isMe ? ' (You)' : ''}
+                          </span>
+                          {supervisorIds?.has(person.uid) && (
+                            <SupervisorBadge compact />
+                          )}
+                        </div>
+                        {thread?.lastMessageAt && (
+                          <span className="text-[10px] text-[#71706b] shrink-0 tabular-nums">
+                            {formatShortTime(thread.lastMessageAt)}
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-[11px] text-[#8d8c85] truncate mt-0.5">
+                        {thread
+                          ? `${previewPrefix}${thread.lastMessageText}`
+                          : person.statusText || 'On the phones'}
+                      </p>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          )}
         </div>
       </div>
 

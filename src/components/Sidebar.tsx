@@ -26,6 +26,7 @@ interface SidebarProps {
   dmCount: number;
   memberCount: number;
   members: TeamMember[];
+  isLoadingMembers?: boolean;
   selectedDmUserId: string | null;
   onOpenDm: (targetUid: string) => void;
   notificationsEnabled: boolean;
@@ -59,6 +60,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   dmCount,
   memberCount,
   members,
+  isLoadingMembers = false,
   selectedDmUserId,
   onOpenDm,
   notificationsEnabled,
@@ -222,44 +224,63 @@ export const Sidebar: React.FC<SidebarProps> = ({
               );
             })}
 
-            {expanded && sortedPeople.length > 0 && (
+            {expanded && (isLoadingMembers || sortedPeople.length > 0) && (
               <div className="pt-4 pb-2">
                 <div className="px-3 pb-1.5 text-[11px] font-medium text-[#71706b]">
                   Direct messages
                 </div>
-                <div className="space-y-0.5">
-                  {sortedPeople.map((person) => {
-                    const isSelected =
-                      activeChannel === 'messages' && selectedDmUserId === person.uid;
-                    const isMe = person.uid === currentMember?.uid;
-                    return (
-                      <button
-                        key={person.uid}
-                        type="button"
-                        onClick={() => handleDmClick(person.uid)}
-                        className={`w-full flex items-center gap-2.5 px-3 py-1.5 rounded-xl border transition-colors text-left ${
-                          isSelected
-                            ? 'bg-[#191918] border-[#2c2c29] text-white font-medium'
-                            : 'border-transparent text-[#9c9a92] hover:bg-[#171715] hover:text-[#edece8]'
-                        }`}
-                        title={`Message ${person.displayName}`}
+                {isLoadingMembers ? (
+                  <div
+                    className="space-y-0.5"
+                    aria-busy="true"
+                    aria-label="Loading closers"
+                  >
+                    {[0, 1, 2, 3].map((idx) => (
+                      <div
+                        key={idx}
+                        aria-hidden="true"
+                        className="w-full flex items-center gap-2.5 px-3 py-1.5 rounded-xl"
                       >
-                        <Avatar
-                          name={person.displayName}
-                          photoUrl={person.photoUrl}
-                          size="xs"
-                        />
-                        <span className="truncate flex-1">
-                          {person.displayName}
-                          {isMe ? ' (You)' : ''}
-                        </span>
-                        {supervisorIds.has(person.uid) && (
-                          <SupervisorBadge compact />
-                        )}
-                      </button>
-                    );
-                  })}
-                </div>
+                        <div className="w-6 h-6 rounded-full skeleton-shimmer shrink-0" />
+                        <div className="w-[100px] h-3 rounded-md skeleton-shimmer" />
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="space-y-0.5 animate-fade-150">
+                    {sortedPeople.map((person) => {
+                      const isSelected =
+                        activeChannel === 'messages' && selectedDmUserId === person.uid;
+                      const isMe = person.uid === currentMember?.uid;
+                      return (
+                        <button
+                          key={person.uid}
+                          type="button"
+                          onClick={() => handleDmClick(person.uid)}
+                          className={`w-full flex items-center gap-2.5 px-3 py-1.5 rounded-xl border transition-colors text-left ${
+                            isSelected
+                              ? 'bg-[#191918] border-[#2c2c29] text-white font-medium'
+                              : 'border-transparent text-[#9c9a92] hover:bg-[#171715] hover:text-[#edece8]'
+                          }`}
+                          title={`Message ${person.displayName}`}
+                        >
+                          <Avatar
+                            name={person.displayName}
+                            photoUrl={person.photoUrl}
+                            size="xs"
+                          />
+                          <span className="truncate flex-1">
+                            {person.displayName}
+                            {isMe ? ' (You)' : ''}
+                          </span>
+                          {supervisorIds.has(person.uid) && (
+                            <SupervisorBadge compact />
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
             )}
           </nav>

@@ -64,7 +64,7 @@ const Skeleton = ({
   ...props
 }: React.HTMLAttributes<HTMLDivElement>) => {
   return (
-    <div className={cn("bg-primary/10 rounded-md", className)} {...props} />
+    <div className={cn("skeleton-shimmer rounded-md", className)} {...props} />
   )
 }
 
@@ -76,17 +76,35 @@ export const TweetSkeleton = ({
   [key: string]: unknown
 }) => (
   <div
+    aria-hidden="true"
     className={cn(
-      "flex size-full max-h-max min-w-0 w-full flex-col gap-2 rounded-2xl border border-[#262624] bg-[#191918] p-4 sm:p-5",
+      "flex size-full max-h-max min-w-0 w-full flex-col gap-3 rounded-[12px] border border-[#262626] bg-[#191919] p-4 sm:p-5",
       className
     )}
     {...props}
   >
-    <div className="flex flex-row gap-3">
-      <Skeleton className="size-10 shrink-0 rounded-full" />
-      <Skeleton className="h-10 w-full" />
+    {/* Header row: 36px avatar circle + stacked name (120px) & timestamp (70px) bars */}
+    <div className="flex flex-row items-center gap-3">
+      <Skeleton className="size-9 shrink-0 rounded-full" />
+      <div className="flex flex-col gap-1.5">
+        <Skeleton className="h-3.5 w-[120px] rounded-md" />
+        <Skeleton className="h-2.5 w-[70px] rounded-md" />
+      </div>
     </div>
-    <Skeleton className="h-20 w-full" />
+
+    {/* Body: 3 text bars (14px height, last bar 65% width) */}
+    <div className="flex flex-col gap-2">
+      <Skeleton className="h-[14px] w-full rounded-md" />
+      <Skeleton className="h-[14px] w-full rounded-md" />
+      <Skeleton className="h-[14px] w-[65%] rounded-md" />
+    </div>
+
+    {/* Footer: 3 small rounded pill placeholders matching Like, Reply, Copy */}
+    <div className="flex items-center gap-1.5 pt-2.5 border-t border-[#222220]">
+      <Skeleton className="h-[26px] w-[56px] rounded-full" />
+      <Skeleton className="h-[26px] w-[60px] rounded-full" />
+      <Skeleton className="h-[26px] w-[56px] rounded-full" />
+    </div>
   </div>
 )
 
