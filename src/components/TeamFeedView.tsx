@@ -50,6 +50,7 @@ import {
   sanitizePostImageUrl,
   uploadPostImageToCloudinary,
 } from '../utils/image.ts';
+import { AmbientGeometricCanvas } from './AmbientGeometricCanvas.tsx';
 
 interface TeamFeedViewProps {
   currentMember: TeamMember;
@@ -904,8 +905,9 @@ export const TeamFeedView: React.FC<TeamFeedViewProps> = ({
   const hasDraft = Boolean(title.trim() || body.trim() || selectedImageFile);
 
   return (
-    <div className="w-full max-w-[680px] py-6 sm:py-8 px-4 sm:px-6 space-y-5 font-['Inter']">
-      {/* Full-Width Search + Alerts + New Post */}
+    <div className="w-full min-h-full flex items-start font-['Inter']">
+      <div className="w-full max-w-[680px] shrink-0 py-6 sm:py-8 px-4 sm:px-6 space-y-5">
+        {/* Full-Width Search + Alerts + New Post */}
       <div className="flex flex-wrap sm:flex-nowrap items-center gap-2 w-full">
         <div className="relative flex-1 min-w-[200px]">
           <Search className="w-3.5 h-3.5 text-[#71706b] absolute left-3 top-1/2 -translate-y-1/2" />
@@ -1297,6 +1299,9 @@ export const TeamFeedView: React.FC<TeamFeedViewProps> = ({
             </div>
           )}
       </div>
+      </div>
+
+      <AmbientGeometricCanvas className="hidden lg:block flex-1 min-w-0 sticky top-0 h-screen z-0" />
     </div>
   );
 };

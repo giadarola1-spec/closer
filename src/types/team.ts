@@ -175,6 +175,22 @@ export interface SupervisorStatusResponse {
   mode: 'env' | 'claimed' | 'unconfigured';
 }
 
+export type FloorStatMetric = 'dmSpoken' | 'mql' | 'sql' | 'opportunity';
 
+export interface FloorStatLogEntry {
+  id: string;
+  metric: FloorStatMetric;
+  uid: string;
+  userName: string;
+  photoURL: string;
+  createdAt: number;
+}
 
-
+export interface FloorStatsDoc {
+  dmSpoken: number;
+  mql: number;
+  sql: number;
+  opportunity: number;
+  logs: FloorStatLogEntry[];
+  updatedAt?: any;
+}

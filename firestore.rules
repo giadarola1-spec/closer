@@ -232,6 +232,46 @@ service cloud.firestore {
         && data.updatedAt is timestamp;
     }
 
+    function isValidFloorStatLog(entry) {
+      return entry is map
+        && entry.keys().hasAll(['id', 'metric', 'uid', 'userName', 'photoURL', 'createdAt'])
+        && entry.keys().hasOnly(['id', 'metric', 'uid', 'userName', 'photoURL', 'createdAt'])
+        && isValidId(entry.id)
+        && entry.metric in ['dmSpoken', 'mql', 'sql', 'opportunity']
+        && isValidId(entry.uid)
+        && entry.userName is string && entry.userName.size() >= 1 && entry.userName.size() <= 60
+        && entry.photoURL is string && entry.photoURL.size() <= 500
+        && (entry.photoURL == '' || entry.photoURL.matches('^https://.*'))
+        && entry.createdAt is int && entry.createdAt > 0;
+    }
+
+    function isValidFloorStats(data) {
+      return data.keys().hasAll(['logs', 'updatedAt'])
+        && data.keys().hasOnly(['dmSpoken', 'mql', 'sql', 'opportunity', 'logs', 'updatedAt'])
+        && (!('dmSpoken' in data) || (data.dmSpoken is int && data.dmSpoken >= 0 && data.dmSpoken <= 100000))
+        && (!('mql' in data) || (data.mql is int && data.mql >= 0 && data.mql <= 100000))
+        && (!('sql' in data) || (data.sql is int && data.sql >= 0 && data.sql <= 100000))
+        && (!('opportunity' in data) || (data.opportunity is int && data.opportunity >= 0 && data.opportunity <= 100000))
+        && data.logs is list
+        && data.logs.size() <= 55
+        && (data.logs.size() == 0 || (
+          isValidFloorStatLog(data.logs[0])
+          && isValidFloorStatLog(data.logs[data.logs.size() - 1])
+        ))
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidFloorStatDelta(newVal, oldVal) {
+      return newVal >= 0 && newVal - oldVal >= -1 && newVal - oldVal <= 1;
+    }
+
+    function floorStatsTotalDelta(newData, oldData) {
+      return (newData.get('dmSpoken', 0) - oldData.get('dmSpoken', 0))
+        + (newData.get('mql', 0) - oldData.get('mql', 0))
+        + (newData.get('sql', 0) - oldData.get('sql', 0))
+        + (newData.get('opportunity', 0) - oldData.get('opportunity', 0));
+    }
+
     // --- Collection Rules ---
 
     // Admin registry (read self only; managed out-of-band)
@@ -362,6 +402,55 @@ service cloud.firestore {
           )
         );
       allow delete: if isAdmin() && isValidId(memberId);
+    }
+
+    // Daily floor stats scoreboard (1 doc per EST date YYYY-MM-DD)
+    match /floor_stats/{dateKey} {
+      allow get: if isVerified()
+        && isValidId(dateKey)
+        && dateKey.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
+        && (isTeamMember() || isAdmin() || isSupervisor());
+      allow list: if isVerified() && (isTeamMember() || isAdmin() || isSupervisor());
+      allow create: if isVerified()
+        && isValidId(dateKey)
+        && dateKey.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
+        && (isTeamMember() || isAdmin() || isSupervisor())
+        && isValidFloorStats(incoming())
+        && incoming().updatedAt == request.time
+        && incoming().get('dmSpoken', 0) in [0, 1]
+        && incoming().get('mql', 0) in [0, 1]
+        && incoming().get('sql', 0) in [0, 1]
+        && incoming().get('opportunity', 0) in [0, 1]
+        && (
+          incoming().get('dmSpoken', 0)
+          + incoming().get('mql', 0)
+          + incoming().get('sql', 0)
+          + incoming().get('opportunity', 0)
+        ) == 1
+        && incoming().logs.size() == 1
+        && incoming().logs[0].uid == request.auth.uid;
+      allow update: if isVerified()
+        && isValidId(dateKey)
+        && dateKey.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
+        && (isTeamMember() || isAdmin() || isSupervisor())
+        && isValidFloorStats(incoming())
+        && incoming().updatedAt == request.time
+        && isValidFloorStatDelta(incoming().get('dmSpoken', 0), existing().get('dmSpoken', 0))
+        && isValidFloorStatDelta(incoming().get('mql', 0), existing().get('mql', 0))
+        && isValidFloorStatDelta(incoming().get('sql', 0), existing().get('sql', 0))
+        && isValidFloorStatDelta(incoming().get('opportunity', 0), existing().get('opportunity', 0))
+        && (
+          (
+            floorStatsTotalDelta(incoming(), existing()) == 1
+            && incoming().logs.size() >= 1
+            && incoming().logs[incoming().logs.size() - 1].uid == request.auth.uid
+          )
+          || (
+            floorStatsTotalDelta(incoming(), existing()) == -1
+            && incoming().logs.size() <= existing().logs.size()
+          )
+        );
+      allow delete: if isAdmin() || isSupervisor();
     }
 
     // Shared team feed posts

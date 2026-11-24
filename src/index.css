@@ -37,6 +37,69 @@ select:focus-visible {
   outline: none;
 }
 
+@keyframes ambient-float-up {
+  0% {
+    transform: translate3d(0, 48px, 0);
+    opacity: 0;
+  }
+  10% {
+    opacity: var(--ambient-opacity, 0.2);
+  }
+  86% {
+    opacity: var(--ambient-opacity, 0.2);
+  }
+  100% {
+    transform: translate3d(0, calc(-100vh - 96px), 0);
+    opacity: 0;
+  }
+}
+
+@keyframes ambient-spin-cw {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes ambient-spin-ccw {
+  from {
+    transform: rotate(360deg);
+  }
+  to {
+    transform: rotate(0deg);
+  }
+}
+
+@layer components {
+  .ambient-drift {
+    position: absolute;
+    top: 100%;
+    animation-name: ambient-float-up;
+    animation-duration: 28s;
+    animation-timing-function: linear;
+    animation-iteration-count: infinite;
+    will-change: transform, opacity;
+  }
+
+  .ambient-spin-cw {
+    animation-name: ambient-spin-cw;
+    animation-duration: 36s;
+    animation-timing-function: linear;
+    animation-iteration-count: infinite;
+    will-change: transform;
+  }
+
+  .ambient-spin-ccw {
+    animation-name: ambient-spin-ccw;
+    animation-duration: 36s;
+    animation-timing-function: linear;
+    animation-iteration-count: infinite;
+    will-change: transform;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

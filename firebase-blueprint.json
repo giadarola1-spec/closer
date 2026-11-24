@@ -439,6 +439,42 @@
         }
       },
       "required": ["syncKey", "updatedAt"]
+    },
+    "FloorStats": {
+      "title": "FloorStats",
+      "description": "Single daily floor scoreboard document keyed by EST date (YYYY-MM-DD) tracking funnel counts and recent contributor logs.",
+      "type": "object",
+      "properties": {
+        "dmSpoken": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100000
+        },
+        "mql": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100000
+        },
+        "sql": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100000
+        },
+        "opportunity": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100000
+        },
+        "logs": {
+          "type": "array",
+          "description": "Up to the latest 50 log entries ({ id, metric, uid, userName, photoURL, createdAt })."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["logs", "updatedAt"]
     }
   },
   "firestore": {
@@ -481,6 +517,10 @@
     "/app_config/{configId}": {
       "schema": { "$ref": "#/entities/SupervisorConfig" },
       "description": "Write-only admin-managed Supervisor verification config."
+    },
+    "/floor_stats/{dateKey}": {
+      "schema": { "$ref": "#/entities/FloorStats" },
+      "description": "Real-time daily floor stats scoreboard keyed by EST YYYY-MM-DD."
     }
   }
 }
