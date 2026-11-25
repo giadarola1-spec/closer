@@ -1,7 +1,7 @@
 {
   "id": "/",
-  "name": "closer - Go To Truckers",
-  "short_name": "closer",
+  "name": "Closer - Go To Truckers",
+  "short_name": "Closer",
   "description": "Real-time team post feed, direct messages, and closer roster for Go To Truckers.",
   "start_url": "/",
   "scope": "/",

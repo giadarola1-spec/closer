@@ -1,7 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import {
   Plus,
-  Menu,
   MessageSquare,
   Users,
   Send,
@@ -20,6 +19,7 @@ import {
 } from '../utils/presence.ts';
 import { Avatar } from './Avatar.tsx';
 import { SupervisorBadge } from './SupervisorBadge.tsx';
+import { PadlockMark } from './PadlockMark.tsx';
 
 interface SidebarProps {
   activeChannel: SidebarChannel;
@@ -151,7 +151,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           isMobileOpen ? 'translate-x-0 w-64' : '-translate-x-full lg:translate-x-0'
         } ${isOpen ? 'lg:w-64' : 'lg:w-16'}`}
       >
-        {/* Top Sidebar Opener */}
+        {/* Top Padlock Opener & Closer Lockup */}
         <div className="flex flex-col flex-1 min-h-0">
           <div
             className={`h-14 px-3.5 flex items-center ${
@@ -161,11 +161,29 @@ export const Sidebar: React.FC<SidebarProps> = ({
             <button
               type="button"
               onClick={onToggleOpen}
-              className="hidden lg:inline-flex items-center justify-center p-1.5 bg-transparent hover:bg-transparent border-0 text-[#8d8c85] hover:text-white transition-colors"
+              className="hidden lg:inline-flex items-center gap-2.5 p-1 bg-transparent hover:bg-transparent border-0 text-[#edece8] hover:text-white transition-colors"
               title={isOpen ? 'Collapse sidebar' : 'Open sidebar'}
               aria-label={isOpen ? 'Collapse sidebar' : 'Open sidebar'}
             >
-              <Menu className="w-4 h-4" />
+              <PadlockMark isOpen={isOpen} size="md" />
+              {isOpen && (
+                <span className="font-['Inter'] font-medium text-base tracking-tight text-[#edece8] whitespace-nowrap">
+                  Closer
+                </span>
+              )}
+            </button>
+
+            <button
+              type="button"
+              onClick={onCloseMobile}
+              className="lg:hidden inline-flex items-center gap-2.5 p-1 bg-transparent hover:bg-transparent border-0 text-[#edece8] hover:text-white transition-colors"
+              title="Close navigation"
+              aria-label="Close navigation"
+            >
+              <PadlockMark isOpen={isMobileOpen} size="md" />
+              <span className="font-['Inter'] font-medium text-base tracking-tight text-[#edece8] whitespace-nowrap">
+                Closer
+              </span>
             </button>
 
             <button

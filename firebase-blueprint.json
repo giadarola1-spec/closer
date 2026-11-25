@@ -240,6 +240,26 @@
           "minLength": 1,
           "maxLength": 2000
         },
+        "parentCommentId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Optional root parent comment ID when replying inside a comment thread."
+        },
+        "replyToCommentId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Optional specific comment ID being replied to directly."
+        },
+        "replyToAuthorName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 60,
+          "description": "Optional display name of the author of the comment being replied to."
+        },
         "createdAt": {
           "type": "string",
           "format": "date-time"

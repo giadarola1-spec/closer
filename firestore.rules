@@ -172,12 +172,22 @@ service cloud.firestore {
 
     function isValidComment(data) {
       return data.keys().hasAll(['teamId', 'postId', 'authorId', 'authorName', 'body', 'createdAt'])
-        && data.keys().hasOnly(['teamId', 'postId', 'authorId', 'authorName', 'body', 'createdAt'])
+        && data.keys().hasOnly([
+          'teamId', 'postId', 'authorId', 'authorName', 'body',
+          'parentCommentId', 'replyToCommentId', 'replyToAuthorName', 'createdAt'
+        ])
         && isValidTeamId(data.teamId)
         && isValidId(data.postId)
         && isValidId(data.authorId)
         && data.authorName is string && data.authorName.size() >= 1 && data.authorName.size() <= 60
         && data.body is string && data.body.size() >= 1 && data.body.size() <= 2000
+        && (!('parentCommentId' in data) || isValidId(data.parentCommentId))
+        && (!('replyToCommentId' in data) || isValidId(data.replyToCommentId))
+        && (!('replyToAuthorName' in data) || (
+          data.replyToAuthorName is string
+          && data.replyToAuthorName.size() >= 1
+          && data.replyToAuthorName.size() <= 60
+        ))
         && data.createdAt is timestamp;
     }
 

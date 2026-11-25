@@ -75,6 +75,9 @@ export interface PostComment {
   authorId: string;
   authorName: string;
   body: string;
+  parentCommentId?: string;
+  replyToCommentId?: string;
+  replyToAuthorName?: string;
   createdAt: any;
 }
 

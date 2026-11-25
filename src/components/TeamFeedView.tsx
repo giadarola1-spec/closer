@@ -35,6 +35,7 @@ import {
   Plus,
   AtSign,
   StickyNote,
+  CornerDownRight,
 } from 'lucide-react';
 import { auth, db, OperationType, handleFirestoreError } from '../firebase.ts';
 import {
@@ -524,6 +525,16 @@ const PostCard: React.FC<PostCardProps> = ({
   const [commentsLoaded, setCommentsLoaded] = useState(false);
   const [replyText, setReplyText] = useState('');
   const [replyBusy, setReplyBusy] = useState(false);
+  const [replyingTo, setReplyingTo] = useState<{
+    id: string;
+    rootId: string;
+    authorName: string;
+  } | null>(null);
+  const [nestedReplyText, setNestedReplyText] = useState('');
+  const [nestedReplyBusy, setNestedReplyBusy] = useState(false);
+  const [nestedMentionQuery, setNestedMentionQuery] =
+    useState<ActiveMentionQuery | null>(null);
+  const [nestedMentionIndex, setNestedMentionIndex] = useState(0);
   const [deletingCommentId, setDeletingCommentId] = useState<string | null>(null);
   const [replyMentionQuery, setReplyMentionQuery] = useState<ActiveMentionQuery | null>(
     null
@@ -534,6 +545,7 @@ const PostCard: React.FC<PostCardProps> = ({
   const [removingMarginNote, setRemovingMarginNote] = useState(false);
 
   const replyInputRef = useRef<HTMLInputElement | null>(null);
+  const nestedReplyInputRef = useRef<HTMLInputElement | null>(null);
 
   const isAuthor = post.authorId === currentMember.uid;
   const canModeratePost = isAuthor || isSupervisor;
@@ -548,9 +560,18 @@ const PostCard: React.FC<PostCardProps> = ({
     return filterMentionCandidates(members, replyMentionQuery.query, 6);
   }, [members, replyMentionQuery]);
 
+  const nestedMentionCandidates = useMemo(() => {
+    if (!nestedMentionQuery) return [];
+    return filterMentionCandidates(members, nestedMentionQuery.query, 6);
+  }, [members, nestedMentionQuery]);
+
   useEffect(() => {
     setReplyMentionIndex(0);
   }, [replyMentionQuery?.query]);
+
+  useEffect(() => {
+    setNestedMentionIndex(0);
+  }, [nestedMentionQuery?.query]);
 
   useEffect(() => {
     const likePath = `posts/${post.id}/likes/${currentMember.uid}`;
@@ -666,6 +687,68 @@ const PostCard: React.FC<PostCardProps> = ({
     }
   };
 
+  const handleOpenNestedReply = (targetComment: PostComment, rootId: string) => {
+    const targetMember = membersById[targetComment.authorId];
+    const targetName = (targetMember?.displayName || targetComment.authorName).slice(
+      0,
+      LIMITS.DISPLAY_NAME_MAX
+    );
+    setReplyingTo({
+      id: targetComment.id,
+      rootId,
+      authorName: targetName || 'Closer',
+    });
+    setNestedMentionQuery(null);
+    window.requestAnimationFrame(() => {
+      nestedReplyInputRef.current?.focus();
+    });
+  };
+
+  const handleCancelNestedReply = () => {
+    setReplyingTo(null);
+    setNestedReplyText('');
+    setNestedMentionQuery(null);
+  };
+
+  const handleAddNestedReply = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!replyingTo || nestedReplyBusy) return;
+    const cleanReply = nestedReplyText.trim().slice(0, LIMITS.COMMENT_MAX);
+    if (!cleanReply) return;
+
+    setNestedReplyBusy(true);
+    const batch = writeBatch(db);
+    const commentRef = doc(collection(db, 'posts', post.id, 'comments'));
+    const postRef = doc(db, 'posts', post.id);
+
+    try {
+      batch.set(commentRef, {
+        teamId: post.teamId,
+        postId: post.id,
+        authorId: currentMember.uid,
+        authorName: currentMember.displayName.slice(0, LIMITS.DISPLAY_NAME_MAX),
+        body: cleanReply,
+        parentCommentId: replyingTo.rootId,
+        replyToCommentId: replyingTo.id,
+        replyToAuthorName: replyingTo.authorName.slice(0, LIMITS.DISPLAY_NAME_MAX),
+        createdAt: serverTimestamp(),
+      });
+      batch.update(postRef, {
+        replyCount: increment(1),
+        lastCommentId: commentRef.id,
+        updatedAt: serverTimestamp(),
+      });
+      await batch.commit();
+      setNestedReplyText('');
+      setNestedMentionQuery(null);
+      setReplyingTo(null);
+    } catch (error) {
+      handleFirestoreError(error, OperationType.WRITE, `posts/${post.id}/comments`);
+    } finally {
+      setNestedReplyBusy(false);
+    }
+  };
+
   const handleTogglePin = async () => {
     if (!canModeratePost || (isArchived && !isSupervisor)) return;
     try {
@@ -777,6 +860,105 @@ const PostCard: React.FC<PostCardProps> = ({
       setReplyMentionQuery(null);
     }
   };
+
+  const handleSelectNestedMention = (member: TeamMember) => {
+    if (!nestedMentionQuery) return;
+    const { nextValue, nextCursorPos } = insertMentionAtCursor(
+      nestedReplyText,
+      nestedMentionQuery.startIndex,
+      nestedMentionQuery.endIndex,
+      member
+    );
+    setNestedReplyText(nextValue.slice(0, LIMITS.COMMENT_MAX));
+    setNestedMentionQuery(null);
+    window.requestAnimationFrame(() => {
+      if (nestedReplyInputRef.current) {
+        nestedReplyInputRef.current.focus();
+        const pos = Math.min(nextCursorPos, LIMITS.COMMENT_MAX);
+        nestedReplyInputRef.current.setSelectionRange(pos, pos);
+      }
+    });
+  };
+
+  const handleNestedReplyInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const val = e.target.value;
+    const cursor = e.target.selectionStart ?? val.length;
+    setNestedReplyText(val);
+    setNestedMentionQuery(findActiveMentionQuery(val, cursor));
+  };
+
+  const handleNestedReplyInputKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (nestedMentionQuery && nestedMentionCandidates.length > 0) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        setNestedMentionIndex((prev) => (prev + 1) % nestedMentionCandidates.length);
+        return;
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        setNestedMentionIndex(
+          (prev) =>
+            (prev - 1 + nestedMentionCandidates.length) % nestedMentionCandidates.length
+        );
+        return;
+      }
+      if (e.key === 'Enter' || e.key === 'Tab') {
+        e.preventDefault();
+        const target =
+          nestedMentionCandidates[nestedMentionIndex] || nestedMentionCandidates[0];
+        if (target) handleSelectNestedMention(target);
+        return;
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        setNestedMentionQuery(null);
+        return;
+      }
+    }
+
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      handleCancelNestedReply();
+    }
+  };
+
+  const { rootComments, childRepliesByRootId } = useMemo(() => {
+    const commentById = new Map<string, PostComment>();
+    for (const c of comments) {
+      commentById.set(c.id, c);
+    }
+
+    const resolveRootId = (comment: PostComment): string => {
+      if (!comment.parentCommentId || !commentById.has(comment.parentCommentId)) {
+        return comment.id;
+      }
+      let cursorId = comment.parentCommentId;
+      const visited = new Set<string>([comment.id]);
+      while (cursorId && !visited.has(cursorId)) {
+        visited.add(cursorId);
+        const parent = commentById.get(cursorId);
+        if (!parent) break;
+        if (!parent.parentCommentId || !commentById.has(parent.parentCommentId)) {
+          return parent.id;
+        }
+        cursorId = parent.parentCommentId;
+      }
+      return comment.parentCommentId;
+    };
+
+    const roots: PostComment[] = [];
+    const children: Record<string, PostComment[]> = {};
+    for (const c of comments) {
+      const rootId = resolveRootId(c);
+      if (rootId === c.id) {
+        roots.push(c);
+      } else {
+        if (!children[rootId]) children[rootId] = [];
+        children[rootId].push(c);
+      }
+    }
+    return { rootComments: roots, childRepliesByRootId: children };
+  }, [comments]);
 
   const safeImageUrl = sanitizePostImageUrl(post.imageUrl);
   const copyPayload = post.title
@@ -954,59 +1136,89 @@ const PostCard: React.FC<PostCardProps> = ({
               </div>
             )
           ) : (
-            <div className="space-y-2.5 pl-3 border-l border-[#2a2a27]">
-              {comments.map((comment) => {
-                const commentMember = membersById[comment.authorId];
-                const commentName = commentMember?.displayName || comment.authorName;
-                const isOwnComment = comment.authorId === currentMember.uid;
-                const canDeleteComment = isOwnComment || isAuthor || isSupervisor;
-                const commentIsSupervisor = supervisorIds.has(comment.authorId);
-                const isDeletingThis = deletingCommentId === comment.id;
-                return (
-                  <div key={comment.id} className="group space-y-1 text-xs">
-                    <div className="flex items-center justify-between gap-2">
-                      <div className="flex items-center gap-2 min-w-0">
-                        <Avatar
-                          name={commentName}
-                          photoUrl={commentMember?.photoUrl}
-                          size="xs"
-                        />
-                        <span className="font-medium text-[#edece8] truncate">
-                          {commentName}
-                        </span>
-                        {commentIsSupervisor && <SupervisorBadge compact />}
-                        <span className="text-[#5c5b56] shrink-0 tabular-nums">
-                          {formatRelativeTime(comment.createdAt)}
-                        </span>
-                      </div>
-                      {canDeleteComment && (
-                        <button
-                          type="button"
-                          onClick={() => handleDeleteComment(comment.id)}
-                          disabled={isDeletingThis}
-                          className="p-1 rounded text-[#71706b] hover:text-white hover:bg-[#222220] disabled:opacity-40 transition-colors shrink-0"
-                          title={
-                            !isOwnComment && isSupervisor
-                              ? 'Delete reply (Supervisor)'
-                              : 'Delete reply'
-                          }
-                          aria-label="Delete reply"
-                        >
-                          {isDeletingThis ? (
-                            <Loader2 className="w-3 h-3 animate-spin" />
-                          ) : (
-                            <Trash2 className="w-3 h-3" />
+            <div className="space-y-3 pl-3 border-l border-[#2a2a27]">
+              {(() => {
+                const renderCommentBlock = (
+                  comment: PostComment,
+                  rootId: string,
+                  isNested: boolean
+                ) => {
+                  const commentMember = membersById[comment.authorId];
+                  const commentName = commentMember?.displayName || comment.authorName;
+                  const isOwnComment = comment.authorId === currentMember.uid;
+                  const canDeleteComment = isOwnComment || isAuthor || isSupervisor;
+                  const commentIsSupervisor = supervisorIds.has(comment.authorId);
+                  const isDeletingThis = deletingCommentId === comment.id;
+                  const isTarget = replyingTo?.id === comment.id;
+                  const showReplyTarget =
+                    isNested &&
+                    comment.replyToAuthorName &&
+                    comment.replyToCommentId &&
+                    comment.replyToCommentId !== rootId;
+                  const commentYt = extractYouTubeLinks(comment.body, 2);
+
+                  return (
+                    <div key={comment.id} className="group space-y-1 text-xs">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <Avatar
+                            name={commentName}
+                            photoUrl={commentMember?.photoUrl}
+                            size="xs"
+                          />
+                          <span className="font-medium text-[#edece8] truncate">
+                            {commentName}
+                          </span>
+                          {commentIsSupervisor && <SupervisorBadge compact />}
+                          {showReplyTarget && (
+                            <span className="text-[11px] text-[#71706b] truncate">
+                              ↳ {comment.replyToAuthorName}
+                            </span>
                           )}
-                        </button>
-                      )}
-                    </div>
-                    <p className="text-[#c9c8c2] leading-relaxed whitespace-pre-wrap pl-7">
-                      {renderCommentRichText(comment.body, membersByHandle, onOpenDm)}
-                    </p>
-                    {(() => {
-                      const commentYt = extractYouTubeLinks(comment.body, 2);
-                      if (commentYt.length === 0) return null;
-                      return (
+                          <span className="text-[#5c5b56] shrink-0 tabular-nums">
+                            {formatRelativeTime(comment.createdAt)}
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-1 shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => handleOpenNestedReply(comment, rootId)}
+                            className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] transition-colors ${
+                              isTarget
+                                ? 'text-white bg-[#242422]'
+                                : 'text-[#71706b] hover:text-white hover:bg-[#222220]'
+                            }`}
+                            title={`Reply to ${commentName}`}
+                          >
+                            <CornerDownRight className="w-3 h-3" />
+                            <span>Reply</span>
+                          </button>
+                          {canDeleteComment && (
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteComment(comment.id)}
+                              disabled={isDeletingThis}
+                              className="p-1 rounded text-[#71706b] hover:text-white hover:bg-[#222220] disabled:opacity-40 transition-colors shrink-0"
+                              title={
+                                !isOwnComment && isSupervisor
+                                  ? 'Delete reply (Supervisor)'
+                                  : 'Delete reply'
+                              }
+                              aria-label="Delete reply"
+                            >
+                              {isDeletingThis ? (
+                                <Loader2 className="w-3 h-3 animate-spin" />
+                              ) : (
+                                <Trash2 className="w-3 h-3" />
+                              )}
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                      <p className="text-[#c9c8c2] leading-relaxed whitespace-pre-wrap pl-7">
+                        {renderCommentRichText(comment.body, membersByHandle, onOpenDm)}
+                      </p>
+                      {commentYt.length > 0 && (
                         <div className="pl-7 pt-1 flex flex-wrap gap-2">
                           {commentYt.map((preview) => (
                             <YouTubeThumbnailCard
@@ -1016,11 +1228,97 @@ const PostCard: React.FC<PostCardProps> = ({
                             />
                           ))}
                         </div>
-                      );
-                    })()}
-                  </div>
-                );
-              })}
+                      )}
+                    </div>
+                  );
+                };
+
+                return rootComments.map((rootComment) => {
+                  const nestedReplies = childRepliesByRootId[rootComment.id] || [];
+                  const isReplyingInThisThread = replyingTo?.rootId === rootComment.id;
+
+                  return (
+                    <div key={rootComment.id} className="space-y-2">
+                      {renderCommentBlock(rootComment, rootComment.id, false)}
+
+                      {(nestedReplies.length > 0 || isReplyingInThisThread) && (
+                        <div className="ml-6 pl-3 border-l border-[#2a2a27] space-y-2.5 pt-1">
+                          {nestedReplies.map((child) =>
+                            renderCommentBlock(child, rootComment.id, true)
+                          )}
+
+                          {isReplyingInThisThread && replyingTo && (
+                            <div className="pt-0.5 space-y-1.5">
+                              <div className="flex items-center justify-between gap-2 text-[11px] text-[#8d8c85]">
+                                <span className="flex items-center gap-1 truncate">
+                                  <CornerDownRight className="w-3 h-3 text-[#71706b] shrink-0" />
+                                  <span>
+                                    Replying to{' '}
+                                    <span className="text-[#edece8] font-medium">
+                                      {replyingTo.authorName}
+                                    </span>
+                                  </span>
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={handleCancelNestedReply}
+                                  className="text-[#71706b] hover:text-white px-1 transition-colors"
+                                  title="Cancel reply"
+                                >
+                                  Cancel
+                                </button>
+                              </div>
+                              <form
+                                onSubmit={handleAddNestedReply}
+                                className="flex items-center gap-2"
+                              >
+                                <div className="relative flex-1 min-w-0">
+                                  <input
+                                    ref={nestedReplyInputRef}
+                                    type="text"
+                                    value={nestedReplyText}
+                                    onChange={handleNestedReplyInputChange}
+                                    onKeyDown={handleNestedReplyInputKeyDown}
+                                    onClick={(e) => {
+                                      const cursor =
+                                        e.currentTarget.selectionStart ??
+                                        nestedReplyText.length;
+                                      setNestedMentionQuery(
+                                        findActiveMentionQuery(nestedReplyText, cursor)
+                                      );
+                                    }}
+                                    maxLength={LIMITS.COMMENT_MAX}
+                                    placeholder={`Reply to ${replyingTo.authorName}... (use @ to mention)`}
+                                    className="w-full bg-[#141413] border border-[#2a2a27] rounded-xl px-3 py-1.5 text-xs text-white placeholder-[#686761] outline-none focus:border-[#4d4d48] transition-colors"
+                                  />
+                                  {nestedMentionQuery &&
+                                    nestedMentionCandidates.length > 0 && (
+                                      <MentionSuggestions
+                                        candidates={nestedMentionCandidates}
+                                        highlightedIndex={nestedMentionIndex}
+                                        supervisorIds={supervisorIds}
+                                        placement="above"
+                                        onHoverIndex={setNestedMentionIndex}
+                                        onSelect={handleSelectNestedMention}
+                                      />
+                                    )}
+                                </div>
+                                <button
+                                  type="submit"
+                                  disabled={nestedReplyBusy || !nestedReplyText.trim()}
+                                  className="px-3 py-1.5 rounded-xl bg-white hover:bg-[#e0dfd9] disabled:bg-[#262624] disabled:text-[#5e5d58] text-black text-xs font-medium transition-colors shrink-0"
+                                >
+                                  {nestedReplyBusy ? '...' : 'Reply'}
+                                </button>
+                              </form>
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  );
+                });
+              })()}
             </div>
           )}
 

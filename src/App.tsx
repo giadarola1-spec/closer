@@ -13,7 +13,7 @@ import {
   onSnapshot,
   serverTimestamp,
 } from 'firebase/firestore';
-import { Menu, Bell, BellOff, Truck } from 'lucide-react';
+import { Bell, BellOff } from 'lucide-react';
 import {
   auth,
   db,
@@ -43,6 +43,7 @@ import { SupervisorModal } from './components/SupervisorModal.tsx';
 import { PostNotificationBanner } from './components/PostNotificationBanner.tsx';
 import { Toast } from './components/Toast.tsx';
 import { LaunchSplash } from './components/LaunchSplash.tsx';
+import { PadlockMark } from './components/PadlockMark.tsx';
 import { sanitizePhotoUrl } from './utils/image.ts';
 import { textMentionsMember } from './utils/mentions.ts';
 import {
@@ -218,8 +219,8 @@ export default function App() {
     if (typeof document === 'undefined') return;
     document.title =
       unreadAwayCount > 0
-        ? `(${unreadAwayCount}) closer - Go To Truckers`
-        : 'closer - Go To Truckers';
+        ? `(${unreadAwayCount}) Closer - Go To Truckers`
+        : 'Closer - Go To Truckers';
   }, [unreadAwayCount]);
 
   const dismissPostAlert = (alertId: string) => {
@@ -1254,10 +1255,10 @@ export default function App() {
             <div className="space-y-2.5">
               <div className="flex items-center gap-2.5">
                 <div className="w-8 h-8 rounded-xl bg-[#141413] border border-[#2a2a27] flex items-center justify-center text-[#edece8]">
-                  <Truck className="w-4 h-4" />
+                  <PadlockMark isOpen={false} animateOnChange={false} size="sm" />
                 </div>
-                <h1 className="font-['Inter'] text-3xl font-medium tracking-tight text-white lowercase">
-                  closer
+                <h1 className="font-['Inter'] text-3xl font-medium tracking-tight text-white">
+                  Closer
                 </h1>
               </div>
               <p className="text-xs text-[#8d8c85] leading-relaxed">
@@ -1333,17 +1334,16 @@ export default function App() {
         <div className="lg:hidden h-12 border-b border-[#222220] bg-[#0f0f0e] flex items-center px-4 justify-between shrink-0 font-['Inter']">
           <button
             type="button"
-            onClick={() => setIsMobileNavOpen(true)}
-            className="p-1.5 bg-transparent hover:bg-transparent border-0 text-[#8d8c85] hover:text-white transition-colors"
+            onClick={() => setIsMobileNavOpen((prev) => !prev)}
+            className="inline-flex items-center gap-2 p-1 bg-transparent hover:bg-transparent border-0 text-[#edece8] hover:text-white transition-colors"
             title="Open navigation"
             aria-label="Open navigation"
           >
-            <Menu className="w-4 h-4" />
+            <PadlockMark isOpen={isMobileNavOpen} size="sm" />
+            <span className="font-['Inter'] text-sm font-medium text-white">
+              Closer
+            </span>
           </button>
-          <div className="flex items-center gap-1.5">
-            <Truck className="w-3.5 h-3.5 text-[#edece8]" />
-            <span className="font-['Inter'] text-sm font-medium text-white lowercase">closer</span>
-          </div>
           <button
             type="button"
             onClick={() => setIsNotificationModalOpen(true)}
