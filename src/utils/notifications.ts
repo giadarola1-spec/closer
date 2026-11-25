@@ -4,7 +4,7 @@ export const DEFAULT_NOTIFICATION_PREFS: NotificationPreferences = {
   postNotificationsEnabled: true,
   postSoundEnabled: true,
   postSoundTone: 'chime',
-  postBrowserAlertsEnabled: false,
+  postBrowserAlertsEnabled: true,
 };
 
 const STORAGE_PREFIX = 'closer_notification_prefs_';
@@ -132,6 +132,37 @@ export function canUseBrowserNotifications(): boolean {
   return typeof window !== 'undefined' && 'Notification' in window;
 }
 
+export function isEmbeddedIframe(): boolean {
+  try {
+    return typeof window !== 'undefined' && window.self !== window.top;
+  } catch {
+    return true;
+  }
+}
+
+export function isPageFocusedAndVisible(): boolean {
+  if (typeof document === 'undefined') return true;
+  return document.visibilityState === 'visible' && document.hasFocus();
+}
+
+let swRegistrationPromise: Promise<ServiceWorkerRegistration | null> | null = null;
+
+export function registerNotificationServiceWorker(): Promise<ServiceWorkerRegistration | null> {
+  if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) {
+    return Promise.resolve(null);
+  }
+  if (!swRegistrationPromise) {
+    swRegistrationPromise = navigator.serviceWorker
+      .register('/sw.js', { scope: '/' })
+      .then((reg) => {
+        reg.update().catch(() => {});
+        return reg;
+      })
+      .catch(() => null);
+  }
+  return swRegistrationPromise;
+}
+
 export async function requestBrowserNotificationPermission(): Promise<
   NotificationPermission | 'unsupported'
 > {
@@ -146,18 +177,52 @@ export async function requestBrowserNotificationPermission(): Promise<
   }
 }
 
-export function showBrowserPostNotification(
-  title: string,
-  body: string,
-  onClick?: () => void
-): void {
+export interface SystemNotificationPayload {
+  title: string;
+  body: string;
+  tag: string;
+  data?: {
+    channel: 'feed' | 'messages';
+    senderUid?: string;
+    postId?: string;
+  };
+  onClick?: () => void;
+}
+
+export async function showSystemNotification({
+  title,
+  body,
+  tag,
+  data,
+  onClick,
+}: SystemNotificationPayload): Promise<void> {
   if (!canUseBrowserNotifications() || Notification.permission !== 'granted') {
     return;
   }
+
+  const trimmedBody = body.slice(0, 160);
+
+  try {
+    const reg = await registerNotificationServiceWorker();
+    if (reg && typeof reg.showNotification === 'function') {
+      await reg.showNotification(title, {
+        body: trimmedBody,
+        tag,
+        icon: '/pwa-192x192.png',
+        badge: '/pwa-192x192.png',
+        data: data || { channel: 'feed' },
+      });
+      return;
+    }
+  } catch {
+    // Fall back to window Notification constructor below
+  }
+
   try {
     const notification = new Notification(title, {
-      body: body.slice(0, 140),
-      tag: 'closer-new-post',
+      body: trimmedBody,
+      tag,
+      icon: '/pwa-192x192.png',
     });
     notification.onclick = () => {
       window.focus();
@@ -167,4 +232,18 @@ export function showBrowserPostNotification(
   } catch {
     // Ignore restricted Notification constructor errors in embedded frames
   }
+}
+
+export function showBrowserPostNotification(
+  title: string,
+  body: string,
+  onClick?: () => void
+): void {
+  void showSystemNotification({
+    title,
+    body,
+    tag: 'closer-new-post',
+    data: { channel: 'feed' },
+    onClick,
+  });
 }

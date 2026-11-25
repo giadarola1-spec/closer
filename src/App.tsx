@@ -55,7 +55,12 @@ import {
   saveCachedNotificationPrefs,
   installAudioUnlockListeners,
   playNotificationSound,
-  showBrowserPostNotification,
+  canUseBrowserNotifications,
+  isEmbeddedIframe,
+  isPageFocusedAndVisible,
+  registerNotificationServiceWorker,
+  requestBrowserNotificationPermission,
+  showSystemNotification,
 } from './utils/notifications.ts';
 
 export default function App() {
@@ -95,14 +100,29 @@ export default function App() {
   const [isNotificationModalOpen, setIsNotificationModalOpen] = useState(false);
   const [postAlerts, setPostAlerts] = useState<PostAlert[]>([]);
   const [composerOpenNonce, setComposerOpenNonce] = useState(0);
+  const [unreadAwayCount, setUnreadAwayCount] = useState(0);
+  const [browserPermission, setBrowserPermission] = useState<
+    NotificationPermission | 'unsupported'
+  >(() => (canUseBrowserNotifications() ? Notification.permission : 'unsupported'));
+  const [browserPromptDismissed, setBrowserPromptDismissed] = useState<boolean>(() => {
+    try {
+      return window.localStorage.getItem('closer_notif_prompt_dismissed') === '1';
+    } catch {
+      return false;
+    }
+  });
 
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
   const toastTimerRef = useRef<number | null>(null);
   const alertTimersRef = useRef<Record<string, number>>({});
   const knownPostIdsRef = useRef<Set<string>>(new Set());
   const initialPostsLoadedRef = useRef(false);
+  const knownDmKeysRef = useRef<Map<string, string>>(new Map());
+  const initialDmsLoadedRef = useRef(false);
   const prefsRef = useRef<NotificationPreferences>(notificationPrefs);
   const membersRef = useRef<TeamMember[]>(members);
+  const activeChannelRef = useRef<SidebarChannel>(activeChannel);
+  const selectedDmUserIdRef = useRef<string | null>(selectedDmUserId);
 
   useEffect(() => {
     prefsRef.current = notificationPrefs;
@@ -113,8 +133,81 @@ export default function App() {
   }, [members]);
 
   useEffect(() => {
+    activeChannelRef.current = activeChannel;
+  }, [activeChannel]);
+
+  useEffect(() => {
+    selectedDmUserIdRef.current = selectedDmUserId;
+  }, [selectedDmUserId]);
+
+  useEffect(() => {
     return installAudioUnlockListeners();
   }, []);
+
+  useEffect(() => {
+    void registerNotificationServiceWorker();
+
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search);
+      const channelParam = params.get('channel');
+      const dmParam = params.get('dm');
+      if (channelParam === 'messages') {
+        setActiveChannel('messages');
+        if (dmParam) {
+          setSelectedDmUserId(dmParam);
+        }
+      } else if (channelParam === 'feed') {
+        setActiveChannel('feed');
+      }
+      if (channelParam || dmParam) {
+        window.history.replaceState({}, '', window.location.pathname);
+      }
+    }
+
+    if (!('serviceWorker' in navigator)) return;
+    const handleSwMessage = (event: MessageEvent) => {
+      if (event.data?.type !== 'NOTIFICATION_CLICK') return;
+      const payload = event.data.payload || {};
+      if (payload.channel === 'messages') {
+        if (typeof payload.senderUid === 'string' && payload.senderUid) {
+          setSelectedDmUserId(payload.senderUid);
+        }
+        setActiveChannel('messages');
+      } else {
+        setActiveChannel('feed');
+      }
+      setUnreadAwayCount(0);
+    };
+    navigator.serviceWorker.addEventListener('message', handleSwMessage);
+    return () => {
+      navigator.serviceWorker.removeEventListener('message', handleSwMessage);
+    };
+  }, []);
+
+  useEffect(() => {
+    const syncPermissionAndClearUnread = () => {
+      if (canUseBrowserNotifications()) {
+        setBrowserPermission(Notification.permission);
+      }
+      if (isPageFocusedAndVisible()) {
+        setUnreadAwayCount(0);
+      }
+    };
+    window.addEventListener('focus', syncPermissionAndClearUnread);
+    document.addEventListener('visibilitychange', syncPermissionAndClearUnread);
+    return () => {
+      window.removeEventListener('focus', syncPermissionAndClearUnread);
+      document.removeEventListener('visibilitychange', syncPermissionAndClearUnread);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (typeof document === 'undefined') return;
+    document.title =
+      unreadAwayCount > 0
+        ? `(${unreadAwayCount}) closer - Go To Truckers`
+        : 'closer - Go To Truckers';
+  }, [unreadAwayCount]);
 
   const dismissPostAlert = (alertId: string) => {
     if (alertTimersRef.current[alertId]) {
@@ -172,6 +265,9 @@ export default function App() {
         setNotificationPrefs(DEFAULT_NOTIFICATION_PREFS);
         knownPostIdsRef.current.clear();
         initialPostsLoadedRef.current = false;
+        knownDmKeysRef.current.clear();
+        initialDmsLoadedRef.current = false;
+        setUnreadAwayCount(0);
         setIsLoadingPosts(false);
         setIsLoadingMembers(false);
       } else {
@@ -394,12 +490,17 @@ export default function App() {
 
                 pushPostAlert({
                   id: `${newPost.id}_${Date.now()}`,
+                  kind: 'post',
                   postId: newPost.id,
                   authorName: mentionedMe ? `${authorName} mentioned you` : authorName,
                   authorPhotoUrl: authorProfile?.photoUrl,
                   title: newPost.title,
                   body: alertSnippet,
                 });
+
+                if (!isPageFocusedAndVisible()) {
+                  setUnreadAwayCount((prev) => prev + 1);
+                }
 
                 if (activePrefs.postSoundEnabled) {
                   playNotificationSound(activePrefs.postSoundTone);
@@ -411,8 +512,12 @@ export default function App() {
                     : newPost.title
                       ? `${authorName}: ${newPost.title}`
                       : `${authorName} posted in closer`;
-                  showBrowserPostNotification(notifTitle, alertSnippet, () => {
-                    setActiveChannel('feed');
+                  void showSystemNotification({
+                    title: notifTitle,
+                    body: alertSnippet,
+                    tag: `closer-post-${newPost.id}`,
+                    data: { channel: 'feed', postId: newPost.id },
+                    onClick: () => setActiveChannel('feed'),
                   });
                 }
               }
@@ -429,6 +534,9 @@ export default function App() {
       }
     );
 
+    initialDmsLoadedRef.current = false;
+    knownDmKeysRef.current.clear();
+
     const dmsQuery = query(
       collection(db, 'dms'),
       where('participantIds', 'array-contains', user.uid)
@@ -437,6 +545,82 @@ export default function App() {
       dmsQuery,
       (snap) => {
         const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }) as DirectThread);
+
+        if (!initialDmsLoadedRef.current) {
+          for (const thread of list) {
+            const msgKey =
+              thread.lastMessageId ||
+              String(thread.lastMessageAt?.toMillis?.() || '') ||
+              thread.lastMessageText ||
+              '';
+            knownDmKeysRef.current.set(thread.id, msgKey);
+          }
+          initialDmsLoadedRef.current = true;
+        } else {
+          for (const change of snap.docChanges()) {
+            if (change.type !== 'added' && change.type !== 'modified') continue;
+            const thread = { id: change.doc.id, ...change.doc.data() } as DirectThread;
+            const msgKey =
+              thread.lastMessageId ||
+              String(thread.lastMessageAt?.toMillis?.() || '') ||
+              thread.lastMessageText ||
+              '';
+            const prevKey = knownDmKeysRef.current.get(thread.id);
+            if (!msgKey || msgKey === prevKey) continue;
+
+            knownDmKeysRef.current.set(thread.id, msgKey);
+
+            if (!thread.lastSenderId || thread.lastSenderId === user.uid) continue;
+
+            const activePrefs = prefsRef.current;
+            if (!activePrefs.postNotificationsEnabled) continue;
+
+            const viewingSameChatHere =
+              isPageFocusedAndVisible() &&
+              activeChannelRef.current === 'messages' &&
+              selectedDmUserIdRef.current === thread.lastSenderId;
+            if (viewingSameChatHere) continue;
+
+            const senderProfile = membersRef.current.find(
+              (m) => m.uid === thread.lastSenderId
+            );
+            const senderName = senderProfile?.displayName || 'Teammate';
+            const dmSnippet = thread.lastMessageText?.trim() || 'Sent you a direct message';
+
+            pushPostAlert({
+              id: `dm_${thread.id}_${Date.now()}`,
+              kind: 'dm',
+              postId: thread.id,
+              senderUid: thread.lastSenderId,
+              authorName: senderName,
+              authorPhotoUrl: senderProfile?.photoUrl,
+              title: '',
+              body: dmSnippet,
+            });
+
+            if (!isPageFocusedAndVisible()) {
+              setUnreadAwayCount((prev) => prev + 1);
+            }
+
+            if (activePrefs.postSoundEnabled) {
+              playNotificationSound(activePrefs.postSoundTone);
+            }
+
+            if (activePrefs.postBrowserAlertsEnabled) {
+              void showSystemNotification({
+                title: `Message from ${senderName}`,
+                body: dmSnippet,
+                tag: `closer-dm-${thread.id}`,
+                data: { channel: 'messages', senderUid: thread.lastSenderId },
+                onClick: () => {
+                  setSelectedDmUserId(thread.lastSenderId);
+                  setActiveChannel('messages');
+                },
+              });
+            }
+          }
+        }
+
         setThreads(list);
       },
       (error) => {
@@ -821,29 +1005,66 @@ export default function App() {
     }
   };
 
-  const handleTestAlert = () => {
+  const handleEnableOutsideNotifications = async () => {
+    const permission = await requestBrowserNotificationPermission();
+    setBrowserPermission(permission);
+    if (permission === 'granted') {
+      await handleUpdateNotificationPrefs({
+        postNotificationsEnabled: true,
+        postBrowserAlertsEnabled: true,
+      });
+      showToast('Outside-page notifications enabled');
+    } else if (isEmbeddedIframe()) {
+      setIsNotificationModalOpen(true);
+    } else {
+      showToast('Allow notifications in your browser settings');
+    }
+  };
+
+  const handleDismissBrowserPrompt = () => {
+    setBrowserPromptDismissed(true);
+    try {
+      window.localStorage.setItem('closer_notif_prompt_dismissed', '1');
+    } catch {
+      // Ignore storage errors
+    }
+  };
+
+  const handleTestAlert = async () => {
     if (!currentMember) return;
     pushPostAlert({
       id: `test_${Date.now()}`,
+      kind: 'post',
       postId: 'test',
       authorName: currentMember.displayName,
       authorPhotoUrl: currentMember.photoUrl,
-      title: 'Test post notification',
+      title: 'Test notification',
       body: notificationPrefs.postNotificationsEnabled
         ? notificationPrefs.postSoundEnabled
           ? `Alerts on · Sound tone: ${notificationPrefs.postSoundTone}`
           : 'Alerts on · Sound muted'
-        : 'Post alerts are currently off (this is a manual preview)',
+        : 'Alerts are currently off (this is a manual preview)',
     });
     if (notificationPrefs.postSoundEnabled) {
       playNotificationSound(notificationPrefs.postSoundTone);
     }
-    if (notificationPrefs.postBrowserAlertsEnabled) {
-      showBrowserPostNotification(
-        `${currentMember.displayName}: Test post notification`,
-        'New post notifications are active.',
-        () => setActiveChannel('feed')
-      );
+
+    let perm: NotificationPermission | 'unsupported' = canUseBrowserNotifications()
+      ? Notification.permission
+      : 'unsupported';
+    if (perm === 'default' && notificationPrefs.postBrowserAlertsEnabled) {
+      perm = await requestBrowserNotificationPermission();
+      setBrowserPermission(perm);
+    }
+
+    if (notificationPrefs.postBrowserAlertsEnabled && perm === 'granted') {
+      void showSystemNotification({
+        title: `${currentMember.displayName} — closer`,
+        body: 'Notifications for new posts & direct messages are active.',
+        tag: 'closer-test-notification',
+        data: { channel: 'feed' },
+        onClick: () => setActiveChannel('feed'),
+      });
     }
   };
 
@@ -1046,8 +1267,63 @@ export default function App() {
       <PostNotificationBanner
         alerts={postAlerts}
         onOpenFeed={() => setActiveChannel('feed')}
+        onOpenDm={handleOpenDm}
         onDismiss={dismissPostAlert}
       />
+
+      {notificationPrefs.postNotificationsEnabled &&
+        canUseBrowserNotifications() &&
+        browserPermission !== 'unsupported' &&
+        !browserPromptDismissed &&
+        (browserPermission !== 'granted' || !notificationPrefs.postBrowserAlertsEnabled) && (
+          <div className="fixed bottom-4 right-4 z-40 max-w-xs bg-[#191918] border border-[#2a2a27] rounded-2xl p-3.5 shadow-xl font-['Inter'] space-y-2.5 animate-in fade-in slide-in-from-bottom-2 duration-150">
+            <div className="flex items-start justify-between gap-2">
+              <div className="space-y-0.5">
+                <div className="text-xs font-medium text-white">
+                  Outside-page alerts
+                </div>
+                <p className="text-[11px] text-[#8d8c85] leading-snug">
+                  Allow desktop notifications to see new posts and DMs while working in other tabs or apps.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={handleDismissBrowserPrompt}
+                className="text-[#71706b] hover:text-white text-xs px-1"
+                title="Dismiss"
+              >
+                ×
+              </button>
+            </div>
+            <div className="flex items-center gap-2">
+              {browserPermission === 'denied' && isEmbeddedIframe() ? (
+                <a
+                  href={typeof window !== 'undefined' ? window.location.href : '/'}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="px-3 py-1.5 rounded-lg bg-white hover:bg-[#e0dfd9] text-black text-[11px] font-medium transition-colors"
+                >
+                  Open standalone tab
+                </a>
+              ) : (
+                <button
+                  type="button"
+                  onClick={handleEnableOutsideNotifications}
+                  className="px-3 py-1.5 rounded-lg bg-white hover:bg-[#e0dfd9] text-black text-[11px] font-medium transition-colors"
+                >
+                  Enable alerts
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => setIsNotificationModalOpen(true)}
+                className="px-2.5 py-1.5 rounded-lg border border-[#2c2c29] text-[#9c9a92] hover:text-white text-[11px] transition-colors"
+              >
+                Settings
+              </button>
+            </div>
+          </div>
+        )}
 
       <NotificationSettingsModal
         isOpen={isNotificationModalOpen}

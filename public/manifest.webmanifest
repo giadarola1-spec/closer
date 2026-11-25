@@ -1,0 +1,25 @@
+{
+  "id": "/",
+  "name": "closer - Go To Truckers",
+  "short_name": "closer",
+  "description": "Real-time team post feed, direct messages, and closer roster for Go To Truckers.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#141413",
+  "theme_color": "#141413",
+  "icons": [
+    {
+      "src": "/pwa-192x192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/favicon.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ]
+}

@@ -126,7 +126,9 @@ export interface NotificationPreferences {
 
 export interface PostAlert {
   id: string;
+  kind?: 'post' | 'dm';
   postId: string;
+  senderUid?: string;
   authorName: string;
   authorPhotoUrl?: string;
   title: string;
