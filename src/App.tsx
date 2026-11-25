@@ -25,6 +25,7 @@ import {
   TEAM_ID,
   ACCEPTED_TEAM_IDS,
   LIMITS,
+  PresenceStatus,
   SidebarChannel,
   TeamMember,
   TeamPost,
@@ -41,8 +42,14 @@ import { NotificationSettingsModal } from './components/NotificationSettingsModa
 import { SupervisorModal } from './components/SupervisorModal.tsx';
 import { PostNotificationBanner } from './components/PostNotificationBanner.tsx';
 import { Toast } from './components/Toast.tsx';
+import { LaunchSplash } from './components/LaunchSplash.tsx';
 import { sanitizePhotoUrl } from './utils/image.ts';
 import { textMentionsMember } from './utils/mentions.ts';
+import {
+  PRESENCE_HEARTBEAT_MS,
+  PRESENCE_IDLE_AFK_MS,
+  PRESENCE_META,
+} from './utils/presence.ts';
 import {
   isValidSyncKey,
   deriveSupervisorSyncKey,
@@ -100,6 +107,8 @@ export default function App() {
   const [isNotificationModalOpen, setIsNotificationModalOpen] = useState(false);
   const [postAlerts, setPostAlerts] = useState<PostAlert[]>([]);
   const [composerOpenNonce, setComposerOpenNonce] = useState(0);
+  const [showLaunchSplash, setShowLaunchSplash] = useState(true);
+  const [nowMs, setNowMs] = useState(() => Date.now());
   const [unreadAwayCount, setUnreadAwayCount] = useState(0);
   const [browserPermission, setBrowserPermission] = useState<
     NotificationPermission | 'unsupported'
@@ -123,6 +132,10 @@ export default function App() {
   const membersRef = useRef<TeamMember[]>(members);
   const activeChannelRef = useRef<SidebarChannel>(activeChannel);
   const selectedDmUserIdRef = useRef<string | null>(selectedDmUserId);
+  const manualPresenceRef = useRef<PresenceStatus>('online');
+  const autoAfkRef = useRef<boolean>(false);
+  const lastInteractionAtRef = useRef<number>(Date.now());
+  const lastHeartbeatSentAtRef = useRef<number>(0);
 
   useEffect(() => {
     prefsRef.current = notificationPrefs;
@@ -349,19 +362,21 @@ export default function App() {
             typeof existingData.photoUrl === 'string'
               ? existingData.photoUrl
               : initialGooglePhoto;
-          const needsMigration =
-            typeof existingData.dailyCalls !== 'number' ||
-            typeof existingData.photoUrl !== 'string' ||
-            existingData.teamId !== TEAM_ID;
+          const initialPresence: PresenceStatus =
+            existingData.presenceState === 'busy' ? 'busy' : 'online';
+          manualPresenceRef.current = initialPresence;
+          autoAfkRef.current = false;
+          lastInteractionAtRef.current = Date.now();
+          lastHeartbeatSentAtRef.current = Date.now();
 
-          if (needsMigration) {
-            await updateDoc(memberRef, {
-              teamId: TEAM_ID,
-              dailyCalls: resolvedDailyCalls,
-              photoUrl: resolvedPhotoUrl,
-              updatedAt: serverTimestamp(),
-            });
-          }
+          await updateDoc(memberRef, {
+            teamId: TEAM_ID,
+            dailyCalls: resolvedDailyCalls,
+            photoUrl: resolvedPhotoUrl,
+            presenceState: initialPresence,
+            lastActiveAt: serverTimestamp(),
+            updatedAt: serverTimestamp(),
+          });
 
           if (!cancelled) {
             setBootstrapMember({
@@ -370,6 +385,8 @@ export default function App() {
               teamId: TEAM_ID,
               dailyCalls: resolvedDailyCalls,
               photoUrl: resolvedPhotoUrl,
+              presenceState: initialPresence,
+              lastActiveAt: Date.now(),
             } as TeamMember);
             setProfileReady(true);
           }
@@ -382,6 +399,11 @@ export default function App() {
             .trim()
             .slice(0, LIMITS.DISPLAY_NAME_MAX);
 
+          manualPresenceRef.current = 'online';
+          autoAfkRef.current = false;
+          lastInteractionAtRef.current = Date.now();
+          lastHeartbeatSentAtRef.current = Date.now();
+
           await setDoc(memberRef, {
             uid: user.uid,
             teamId: TEAM_ID,
@@ -390,6 +412,8 @@ export default function App() {
             statusText: 'On the phones',
             dailyCalls: 0,
             photoUrl: initialGooglePhoto,
+            presenceState: 'online',
+            lastActiveAt: serverTimestamp(),
             createdAt: serverTimestamp(),
             updatedAt: serverTimestamp(),
           });
@@ -404,6 +428,8 @@ export default function App() {
               statusText: 'On the phones',
               dailyCalls: 0,
               photoUrl: initialGooglePhoto,
+              presenceState: 'online',
+              lastActiveAt: Date.now(),
               createdAt: null,
               updatedAt: null,
             });
@@ -650,6 +676,91 @@ export default function App() {
       unsubPosts();
       unsubDms();
       unsubSupervisors();
+    };
+  }, [authReady, user, profileReady]);
+
+  // Automatic presence heartbeat, idle AFK detection, and freshness ticker
+  useEffect(() => {
+    if (!authReady || !user || !user.emailVerified || !profileReady) return;
+
+    const uid = user.uid;
+    const writePresence = (nextState: PresenceStatus) => {
+      lastHeartbeatSentAtRef.current = Date.now();
+      void updateDoc(doc(db, 'members', uid), {
+        presenceState: nextState,
+        lastActiveAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      }).catch(() => {
+        // Ignore transient offline/disconnect write failures on presence ping
+      });
+    };
+
+    const handleUserActivity = () => {
+      const now = Date.now();
+      lastInteractionAtRef.current = now;
+      if (autoAfkRef.current && manualPresenceRef.current === 'online') {
+        autoAfkRef.current = false;
+        writePresence('online');
+      }
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState !== 'visible') return;
+      const now = Date.now();
+      lastInteractionAtRef.current = now;
+      if (manualPresenceRef.current === 'offline') return;
+      if (autoAfkRef.current && manualPresenceRef.current === 'online') {
+        autoAfkRef.current = false;
+        writePresence('online');
+      } else if (now - lastHeartbeatSentAtRef.current >= 60_000) {
+        writePresence(manualPresenceRef.current);
+      }
+    };
+
+    const handlePageHide = () => {
+      void updateDoc(doc(db, 'members', uid), {
+        presenceState: 'offline',
+        lastActiveAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      }).catch(() => {});
+    };
+
+    window.addEventListener('pointerdown', handleUserActivity, { passive: true });
+    window.addEventListener('keydown', handleUserActivity, { passive: true });
+    window.addEventListener('touchstart', handleUserActivity, { passive: true });
+    window.addEventListener('mousemove', handleUserActivity, { passive: true });
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('pagehide', handlePageHide);
+
+    const intervalId = window.setInterval(() => {
+      const now = Date.now();
+      setNowMs(now);
+
+      const desired = manualPresenceRef.current;
+      if (desired === 'offline') return;
+
+      if (desired === 'online' && !autoAfkRef.current) {
+        if (now - lastInteractionAtRef.current >= PRESENCE_IDLE_AFK_MS) {
+          autoAfkRef.current = true;
+          writePresence('afk');
+          return;
+        }
+      }
+
+      if (now - lastHeartbeatSentAtRef.current >= PRESENCE_HEARTBEAT_MS) {
+        const effectiveWriteState: PresenceStatus = autoAfkRef.current ? 'afk' : desired;
+        writePresence(effectiveWriteState);
+      }
+    }, 30_000);
+
+    return () => {
+      window.clearInterval(intervalId);
+      window.removeEventListener('pointerdown', handleUserActivity);
+      window.removeEventListener('keydown', handleUserActivity);
+      window.removeEventListener('touchstart', handleUserActivity);
+      window.removeEventListener('mousemove', handleUserActivity);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('pagehide', handlePageHide);
     };
   }, [authReady, user, profileReady]);
 
@@ -967,8 +1078,33 @@ export default function App() {
     }
   };
 
+  const handleChangePresence = async (next: PresenceStatus) => {
+    if (!user) return;
+    manualPresenceRef.current = next;
+    autoAfkRef.current = false;
+    lastInteractionAtRef.current = Date.now();
+    lastHeartbeatSentAtRef.current = Date.now();
+    try {
+      await updateDoc(doc(db, 'members', user.uid), {
+        presenceState: next,
+        lastActiveAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+      showToast(`Availability: ${PRESENCE_META[next].label}`);
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, `members/${user.uid}`);
+    }
+  };
+
   const handleSignOut = async () => {
     try {
+      if (user) {
+        await updateDoc(doc(db, 'members', user.uid), {
+          presenceState: 'offline',
+          lastActiveAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        }).catch(() => {});
+      }
       await signOut(auth);
       setActiveChannel('feed');
     } catch (error) {
@@ -1100,74 +1236,75 @@ export default function App() {
     showToast(label);
   };
 
-  // Loading auth state
-  if (!authReady) {
-    return (
-      <div className="min-h-screen bg-[#141413] text-[#8d8c85] flex items-center justify-center font-['Inter'] text-xs">
-        Loading workspace...
-      </div>
-    );
-  }
+  const renderContent = () => {
+    // Loading auth state
+    if (!authReady) {
+      return (
+        <div className="min-h-screen bg-[#141413] text-[#8d8c85] flex items-center justify-center font-['Inter'] text-xs">
+          Loading workspace...
+        </div>
+      );
+    }
 
-  // Unauthenticated or unverified sign-in view
-  if (!user || !user.emailVerified) {
-    return (
-      <div className="min-h-screen bg-[#141413] text-[#edece8] flex items-center justify-center p-6 font-['Inter'] selection:bg-[#2b2b28] selection:text-white">
-        <div className="max-w-sm w-full bg-[#191918] border border-[#262624] rounded-2xl p-7 space-y-6">
-          <div className="space-y-2.5">
-            <div className="flex items-center gap-2.5">
-              <div className="w-8 h-8 rounded-xl bg-[#141413] border border-[#2a2a27] flex items-center justify-center text-[#edece8]">
-                <Truck className="w-4 h-4" />
+    // Unauthenticated or unverified sign-in view
+    if (!user || !user.emailVerified) {
+      return (
+        <div className="min-h-screen bg-[#141413] text-[#edece8] flex items-center justify-center p-6 font-['Inter'] selection:bg-[#2b2b28] selection:text-white">
+          <div className="max-w-sm w-full bg-[#191918] border border-[#262624] rounded-2xl p-7 space-y-6">
+            <div className="space-y-2.5">
+              <div className="flex items-center gap-2.5">
+                <div className="w-8 h-8 rounded-xl bg-[#141413] border border-[#2a2a27] flex items-center justify-center text-[#edece8]">
+                  <Truck className="w-4 h-4" />
+                </div>
+                <h1 className="font-['Inter'] text-3xl font-medium tracking-tight text-white lowercase">
+                  closer
+                </h1>
               </div>
-              <h1 className="font-['Inter'] text-3xl font-medium tracking-tight text-white lowercase">
-                closer
-              </h1>
+              <p className="text-xs text-[#8d8c85] leading-relaxed">
+                Go To Truckers — Closers Team Hub. Share posts, updates, private messages, and daily call volume in real time.
+              </p>
             </div>
-            <p className="text-xs text-[#8d8c85] leading-relaxed">
-              Go To Truckers — Closers Team Hub. Share posts, updates, private messages, and daily call volume in real time.
-            </p>
-          </div>
 
-          {authError && (
-            <div className="bg-[#141413] border border-[#32322f] rounded-xl px-3 py-2 text-xs text-[#d1d1cf] leading-relaxed">
-              {authError}
-            </div>
-          )}
-
-          <div className="space-y-2">
-            <button
-              onClick={handleSignIn}
-              disabled={authBusy}
-              className="w-full py-2.5 px-4 rounded-xl bg-white hover:bg-[#e0dfd9] disabled:opacity-60 text-black text-xs font-medium transition-colors"
-            >
-              {authBusy ? 'Signing in...' : 'Sign in with Google'}
-            </button>
-
-            {user && !user.emailVerified && (
-              <button
-                onClick={handleSignOut}
-                className="w-full py-2 px-4 rounded-xl bg-[#141413] border border-[#2a2a27] text-[#9c9a92] hover:text-white text-xs transition-colors"
-              >
-                Use another account
-              </button>
+            {authError && (
+              <div className="bg-[#141413] border border-[#32322f] rounded-xl px-3 py-2 text-xs text-[#d1d1cf] leading-relaxed">
+                {authError}
+              </div>
             )}
+
+            <div className="space-y-2">
+              <button
+                onClick={handleSignIn}
+                disabled={authBusy}
+                className="w-full py-2.5 px-4 rounded-xl bg-white hover:bg-[#e0dfd9] disabled:opacity-60 text-black text-xs font-medium transition-colors"
+              >
+                {authBusy ? 'Signing in...' : 'Sign in with Google'}
+              </button>
+
+              {user && !user.emailVerified && (
+                <button
+                  onClick={handleSignOut}
+                  className="w-full py-2 px-4 rounded-xl bg-[#141413] border border-[#2a2a27] text-[#9c9a92] hover:text-white text-xs transition-colors"
+                >
+                  Use another account
+                </button>
+              )}
+            </div>
           </div>
         </div>
-      </div>
-    );
-  }
+      );
+    }
 
-  // Bootstrapping team member profile
-  if (!profileReady || !currentMember) {
+    // Bootstrapping team member profile
+    if (!profileReady || !currentMember) {
+      return (
+        <div className="min-h-screen bg-[#141413] text-[#8d8c85] flex items-center justify-center font-['Inter'] text-xs">
+          Joining closer floor...
+        </div>
+      );
+    }
+
     return (
-      <div className="min-h-screen bg-[#141413] text-[#8d8c85] flex items-center justify-center font-['Inter'] text-xs">
-        Joining closer floor...
-      </div>
-    );
-  }
-
-  return (
-    <div className="h-screen w-screen bg-[#141413] text-[#d1d1cf] flex font-['Inter'] selection:bg-[#2b2b28] selection:text-white overflow-hidden">
+      <div className="h-screen w-screen bg-[#141413] text-[#d1d1cf] flex font-['Inter'] selection:bg-[#2b2b28] selection:text-white overflow-hidden">
       <Sidebar
         activeChannel={activeChannel}
         onSelectChannel={(channel) => setActiveChannel(channel)}
@@ -1179,9 +1316,9 @@ export default function App() {
         isLoadingMembers={isLoadingMembers}
         selectedDmUserId={selectedDmUserId}
         onOpenDm={handleOpenDm}
-        notificationsEnabled={notificationPrefs.postNotificationsEnabled}
-        onOpenNotificationSettings={() => setIsNotificationModalOpen(true)}
         currentMember={currentMember}
+        nowMs={nowMs}
+        onChangePresence={handleChangePresence}
         supervisorIds={supervisorIds}
         isSupervisor={isSupervisor}
         onOpenSupervisorModal={handleOpenSupervisorModal}
@@ -1197,8 +1334,9 @@ export default function App() {
           <button
             type="button"
             onClick={() => setIsMobileNavOpen(true)}
-            className="p-1.5 text-[#8d8c85] hover:text-white rounded-lg bg-[#191918] border border-[#262624]"
+            className="p-1.5 bg-transparent hover:bg-transparent border-0 text-[#8d8c85] hover:text-white transition-colors"
             title="Open navigation"
+            aria-label="Open navigation"
           >
             <Menu className="w-4 h-4" />
           </button>
@@ -1227,6 +1365,8 @@ export default function App() {
               threads={threads}
               currentUserId={currentMember.uid}
               googlePhotoUrl={user.photoURL}
+              nowMs={nowMs}
+              onChangePresence={handleChangePresence}
               supervisorIds={supervisorIds}
               isSupervisor={isSupervisor}
               onOpenSupervisorModal={handleOpenSupervisorModal}
@@ -1241,6 +1381,7 @@ export default function App() {
               threads={threads}
               supervisorIds={supervisorIds}
               selectedUserId={selectedDmUserId}
+              nowMs={nowMs}
               onSelectUser={(uid) => setSelectedDmUserId(uid)}
               onNotify={showToast}
             />
@@ -1353,5 +1494,15 @@ export default function App() {
 
       <Toast message={toastMessage} />
     </div>
+    );
+  };
+
+  return (
+    <>
+      {renderContent()}
+      {showLaunchSplash && (
+        <LaunchSplash onComplete={() => setShowLaunchSplash(false)} />
+      )}
+    </>
   );
 }

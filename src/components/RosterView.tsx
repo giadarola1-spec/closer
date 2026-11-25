@@ -1,8 +1,20 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { doc, updateDoc, serverTimestamp } from 'firebase/firestore';
 import { db, OperationType, handleFirestoreError } from '../firebase.ts';
-import { TeamMember, DirectThread, LIMITS, getOtherParticipantId } from '../types/team.ts';
+import {
+  TeamMember,
+  DirectThread,
+  PresenceStatus,
+  LIMITS,
+  getOtherParticipantId,
+} from '../types/team.ts';
 import { compressProfileImage, sanitizePhotoUrl } from '../utils/image.ts';
+import {
+  PRESENCE_META,
+  PRESENCE_OPTIONS,
+  inferPresenceFromStatusText,
+  resolveEffectivePresence,
+} from '../utils/presence.ts';
 import { Avatar } from './Avatar.tsx';
 import { SupervisorBadge } from './SupervisorBadge.tsx';
 import {
@@ -24,6 +36,8 @@ interface RosterViewProps {
   threads: DirectThread[];
   currentUserId: string;
   googlePhotoUrl?: string | null;
+  nowMs?: number;
+  onChangePresence?: (next: PresenceStatus) => void;
   supervisorIds: Set<string>;
   isSupervisor: boolean;
   onOpenSupervisorModal: () => void;
@@ -50,6 +64,8 @@ export const RosterView: React.FC<RosterViewProps> = ({
   threads,
   currentUserId,
   googlePhotoUrl,
+  nowMs = Date.now(),
+  onChangePresence,
   supervisorIds,
   isSupervisor,
   onOpenSupervisorModal,
@@ -198,12 +214,16 @@ export const RosterView: React.FC<RosterViewProps> = ({
     if (!currentMember || statusSaving) return;
     setStatusText(preset);
     setStatusSaving(true);
+    const inferredPresence = inferPresenceFromStatusText(preset) ?? 'online';
     const path = `members/${currentUserId}`;
     try {
       await updateDoc(doc(db, 'members', currentUserId), {
         statusText: preset,
+        presenceState: inferredPresence,
+        lastActiveAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       });
+      onChangePresence?.(inferredPresence);
       onNotify(`Status: ${preset}`);
     } catch (error) {
       handleFirestoreError(error, OperationType.UPDATE, path);
@@ -343,29 +363,56 @@ export const RosterView: React.FC<RosterViewProps> = ({
         </div>
       </div>
 
-      {/* 1-Click Quick Status Selector */}
+      {/* 1-Click Availability & Quick Status Selector */}
       {currentMember && !isEditing && (
-        <div className="flex flex-wrap items-center justify-between gap-2 bg-[#191918] border border-[#262624] rounded-2xl px-4 py-3">
-          <span className="text-xs text-[#8d8c85]">Your status</span>
-          <div className="flex flex-wrap items-center gap-1.5">
-            {STATUS_PRESETS.map((preset) => {
-              const active = (currentMember.statusText || '').trim() === preset;
-              return (
-                <button
-                  key={preset}
-                  type="button"
-                  disabled={statusSaving}
-                  onClick={() => handleQuickStatusSelect(preset)}
-                  className={`px-2.5 py-1 rounded-lg border text-xs transition-colors whitespace-nowrap ${
-                    active
-                      ? 'bg-[#2a2a27] border-[#42423e] text-white font-medium'
-                      : 'bg-[#141413] border-[#262624] text-[#8d8c85] hover:text-[#edece8] hover:border-[#363632]'
-                  }`}
-                >
-                  {preset}
-                </button>
-              );
-            })}
+        <div className="bg-[#191918] border border-[#262624] rounded-2xl px-4 py-3 space-y-2.5">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <span className="text-xs text-[#8d8c85]">Availability</span>
+            <div className="flex flex-wrap items-center gap-1.5">
+              {PRESENCE_OPTIONS.map((option) => {
+                const meta = PRESENCE_META[option];
+                const active = resolveEffectivePresence(currentMember, nowMs) === option;
+                return (
+                  <button
+                    key={option}
+                    type="button"
+                    onClick={() => onChangePresence?.(option)}
+                    className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg border text-xs transition-colors whitespace-nowrap ${
+                      active
+                        ? 'bg-[#2a2a27] border-[#42423e] text-white font-medium'
+                        : 'bg-[#141413] border-[#262624] text-[#8d8c85] hover:text-[#edece8] hover:border-[#363632]'
+                    }`}
+                  >
+                    <span className={`w-2 h-2 rounded-full shrink-0 ${meta.dotClass}`} />
+                    <span>{meta.label}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-[#222220]">
+            <span className="text-xs text-[#8d8c85]">Your status</span>
+            <div className="flex flex-wrap items-center gap-1.5">
+              {STATUS_PRESETS.map((preset) => {
+                const active = (currentMember.statusText || '').trim() === preset;
+                return (
+                  <button
+                    key={preset}
+                    type="button"
+                    disabled={statusSaving}
+                    onClick={() => handleQuickStatusSelect(preset)}
+                    className={`px-2.5 py-1 rounded-lg border text-xs transition-colors whitespace-nowrap ${
+                      active
+                        ? 'bg-[#2a2a27] border-[#42423e] text-white font-medium'
+                        : 'bg-[#141413] border-[#262624] text-[#8d8c85] hover:text-[#edece8] hover:border-[#363632]'
+                    }`}
+                  >
+                    {preset}
+                  </button>
+                );
+              })}
+            </div>
           </div>
         </div>
       )}
@@ -551,6 +598,8 @@ export const RosterView: React.FC<RosterViewProps> = ({
             const memberIsSupervisor = supervisorIds.has(member.uid);
             const isModeratingThis = moderatingUid === member.uid;
             const callsCount = typeof member.dailyCalls === 'number' ? member.dailyCalls : 0;
+            const memberPresence = resolveEffectivePresence(member, nowMs);
+            const memberPresenceMeta = PRESENCE_META[memberPresence];
 
             return (
               <div
@@ -572,6 +621,8 @@ export const RosterView: React.FC<RosterViewProps> = ({
                       name={member.displayName}
                       photoUrl={member.photoUrl}
                       size="md"
+                      presenceStatus={memberPresence}
+                      presenceRingClass="ring-[#191918]"
                     />
                     <span className="absolute inset-0 rounded-full bg-black/60 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity">
                       <Camera className="w-3.5 h-3.5 text-white" />
@@ -582,6 +633,8 @@ export const RosterView: React.FC<RosterViewProps> = ({
                     name={member.displayName}
                     photoUrl={member.photoUrl}
                     size="md"
+                    presenceStatus={memberPresence}
+                    presenceRingClass="ring-[#191918]"
                   />
                 )}
 
@@ -594,9 +647,12 @@ export const RosterView: React.FC<RosterViewProps> = ({
                       {memberIsSupervisor && <SupervisorBadge compact />}
                     </div>
                     <div className="flex items-center gap-1.5 shrink-0">
+                      <span className={`text-[11px] ${memberPresenceMeta.textClass}`}>
+                        {memberPresenceMeta.label}
+                      </span>
                       {isMe && (
-                        <span className="text-[11px] text-[#9c9a92]">
-                          You
+                        <span className="text-[11px] text-[#71706b]">
+                          · You
                         </span>
                       )}
                       {isSupervisor && !isMe && !isModeratingThis && (

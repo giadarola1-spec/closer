@@ -38,6 +38,16 @@
           "pattern": "^(|https://.*|data:image/(jpeg|png|webp);base64,.*)$",
           "description": "Optional profile picture (https URL or compressed JPEG/PNG/WebP data URI)."
         },
+        "presenceState": {
+          "type": "string",
+          "enum": ["online", "busy", "afk", "offline"],
+          "description": "Live connection/availability status of the closer."
+        },
+        "lastActiveAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Last heartbeat timestamp proving active session."
+        },
         "createdAt": {
           "type": "string",
           "format": "date-time"

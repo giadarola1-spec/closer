@@ -1,20 +1,23 @@
-import React, { useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   Plus,
-  PanelLeftClose,
-  PanelLeftOpen,
+  Menu,
   MessageSquare,
   Users,
   Send,
   LogOut,
-  Bell,
-  BellOff,
-  Truck,
   X,
   Shield,
   ShieldCheck,
+  ChevronUp,
+  Check,
 } from 'lucide-react';
-import { SidebarChannel, TeamMember } from '../types/team.ts';
+import { PresenceStatus, SidebarChannel, TeamMember } from '../types/team.ts';
+import {
+  PRESENCE_META,
+  PRESENCE_OPTIONS,
+  resolveEffectivePresence,
+} from '../utils/presence.ts';
 import { Avatar } from './Avatar.tsx';
 import { SupervisorBadge } from './SupervisorBadge.tsx';
 
@@ -29,9 +32,9 @@ interface SidebarProps {
   isLoadingMembers?: boolean;
   selectedDmUserId: string | null;
   onOpenDm: (targetUid: string) => void;
-  notificationsEnabled: boolean;
-  onOpenNotificationSettings: () => void;
   currentMember: TeamMember | null;
+  nowMs: number;
+  onChangePresence: (next: PresenceStatus) => void;
   supervisorIds: Set<string>;
   isSupervisor: boolean;
   onOpenSupervisorModal: () => void;
@@ -63,9 +66,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
   isLoadingMembers = false,
   selectedDmUserId,
   onOpenDm,
-  notificationsEnabled,
-  onOpenNotificationSettings,
   currentMember,
+  nowMs,
+  onChangePresence,
   supervisorIds,
   isSupervisor,
   onOpenSupervisorModal,
@@ -75,6 +78,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
   isMobileOpen,
   onCloseMobile,
 }) => {
+  const [isPresenceMenuOpen, setIsPresenceMenuOpen] = useState(false);
+  const presenceMenuRef = useRef<HTMLDivElement | null>(null);
+
   useEffect(() => {
     if (!isMobileOpen) return;
     const onKeyDown = (e: KeyboardEvent) => {
@@ -84,6 +90,27 @@ export const Sidebar: React.FC<SidebarProps> = ({
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [isMobileOpen, onCloseMobile]);
 
+  useEffect(() => {
+    if (!isPresenceMenuOpen) return;
+    const handlePointerDown = (e: MouseEvent) => {
+      if (
+        presenceMenuRef.current &&
+        !presenceMenuRef.current.contains(e.target as Node)
+      ) {
+        setIsPresenceMenuOpen(false);
+      }
+    };
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setIsPresenceMenuOpen(false);
+    };
+    document.addEventListener('mousedown', handlePointerDown);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [isPresenceMenuOpen]);
+
   const sortedPeople = [...members].sort((a, b) => {
     if (a.uid === currentMember?.uid && b.uid !== currentMember?.uid) return 1;
     if (b.uid === currentMember?.uid && a.uid !== currentMember?.uid) return -1;
@@ -91,6 +118,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
   });
 
   const expanded = isOpen || isMobileOpen;
+  const myPresence = resolveEffectivePresence(currentMember, nowMs);
+  const myPresenceMeta = PRESENCE_META[myPresence];
 
   const handleNavClick = (channel: SidebarChannel) => {
     onSelectChannel(channel);
@@ -122,41 +151,29 @@ export const Sidebar: React.FC<SidebarProps> = ({
           isMobileOpen ? 'translate-x-0 w-64' : '-translate-x-full lg:translate-x-0'
         } ${isOpen ? 'lg:w-64' : 'lg:w-16'}`}
       >
-        {/* Top Brand & Toggle */}
+        {/* Top Sidebar Opener */}
         <div className="flex flex-col flex-1 min-h-0">
-          <div className="h-14 px-3.5 flex items-center justify-between">
-            {expanded ? (
-              <div className="flex items-center gap-2 pl-1 min-w-0">
-                <Truck className="w-4 h-4 text-[#edece8] shrink-0" />
-                <span className="font-['Inter'] font-medium text-base tracking-tight text-[#edece8] lowercase whitespace-nowrap">
-                  closer
-                </span>
-                <span className="text-[11px] text-[#71706b] font-normal tabular-nums whitespace-nowrap">
-                  · {memberCount}
-                </span>
-              </div>
-            ) : (
-              <span className="sr-only">closer</span>
-            )}
-
+          <div
+            className={`h-14 px-3.5 flex items-center ${
+              expanded ? 'justify-between lg:justify-start' : 'justify-center'
+            }`}
+          >
             <button
               type="button"
               onClick={onToggleOpen}
-              className="hidden lg:inline-flex text-[#71706b] hover:text-white p-1.5 rounded-lg hover:bg-[#1a1a18] transition-colors mx-auto lg:mx-0"
-              title={isOpen ? 'Collapse sidebar' : 'Expand sidebar'}
+              className="hidden lg:inline-flex items-center justify-center p-1.5 bg-transparent hover:bg-transparent border-0 text-[#8d8c85] hover:text-white transition-colors"
+              title={isOpen ? 'Collapse sidebar' : 'Open sidebar'}
+              aria-label={isOpen ? 'Collapse sidebar' : 'Open sidebar'}
             >
-              {isOpen ? (
-                <PanelLeftClose className="w-4 h-4" />
-              ) : (
-                <PanelLeftOpen className="w-4 h-4" />
-              )}
+              <Menu className="w-4 h-4" />
             </button>
 
             <button
               type="button"
               onClick={onCloseMobile}
-              className="lg:hidden text-[#71706b] hover:text-white p-1.5 rounded-lg hover:bg-[#1a1a18] transition-colors"
+              className="lg:hidden ml-auto p-1.5 bg-transparent hover:bg-transparent border-0 text-[#8d8c85] hover:text-white transition-colors"
               title="Close navigation"
+              aria-label="Close navigation"
             >
               <X className="w-4 h-4" />
             </button>
@@ -252,6 +269,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
                       const isSelected =
                         activeChannel === 'messages' && selectedDmUserId === person.uid;
                       const isMe = person.uid === currentMember?.uid;
+                      const presence = resolveEffectivePresence(person, nowMs);
+                      const presenceMeta = PRESENCE_META[presence];
+
                       return (
                         <button
                           key={person.uid}
@@ -262,12 +282,14 @@ export const Sidebar: React.FC<SidebarProps> = ({
                               ? 'bg-[#191918] border-[#2c2c29] text-white font-medium'
                               : 'border-transparent text-[#9c9a92] hover:bg-[#171715] hover:text-[#edece8]'
                           }`}
-                          title={`Message ${person.displayName}`}
+                          title={`Message ${person.displayName} · ${presenceMeta.label}`}
                         >
                           <Avatar
                             name={person.displayName}
                             photoUrl={person.photoUrl}
                             size="xs"
+                            presenceStatus={presence}
+                            presenceRingClass="ring-[#0f0f0e]"
                           />
                           <span className="truncate flex-1">
                             {person.displayName}
@@ -286,34 +308,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
           </nav>
         </div>
 
-        {/* Bottom Alerts Trigger & Current Closer Profile Strip */}
+        {/* Bottom Supervisor & Current Closer Profile Strip */}
         <div className="border-t border-[#1e1e1c] p-2.5 space-y-1.5">
-          <button
-            type="button"
-            onClick={() => {
-              onOpenNotificationSettings();
-              onCloseMobile();
-            }}
-            className={`w-full flex items-center justify-between px-2.5 py-2 rounded-xl text-xs transition-colors text-[#9c9a92] hover:text-white hover:bg-[#171715] whitespace-nowrap ${
-              !expanded ? 'justify-center px-0' : ''
-            }`}
-            title="Edit post notifications & sound"
-          >
-            <span className="flex items-center gap-2 min-w-0">
-              {notificationsEnabled ? (
-                <Bell className="w-3.5 h-3.5 shrink-0 text-[#edece8]" />
-              ) : (
-                <BellOff className="w-3.5 h-3.5 shrink-0 text-[#71706b]" />
-              )}
-              {expanded && <span className="truncate">Post alerts</span>}
-            </span>
-            {expanded && (
-              <span className="text-[11px] text-[#71706b]">
-                {notificationsEnabled ? 'On' : 'Off'}
-              </span>
-            )}
-          </button>
-
           <button
             type="button"
             onClick={() => {
@@ -347,38 +343,98 @@ export const Sidebar: React.FC<SidebarProps> = ({
           </button>
 
           {expanded ? (
-            <div className="flex items-center justify-between gap-2 px-2 py-1.5 rounded-xl hover:bg-[#171715] transition-colors">
-              <button
-                type="button"
-                onClick={() => handleNavClick('roster')}
-                className="flex items-center gap-2.5 text-left min-w-0 flex-1"
-                title="Edit your closer profile, photo & daily calls"
-              >
-                <Avatar
-                  name={currentMember?.displayName || 'Closer'}
-                  photoUrl={currentMember?.photoUrl}
-                  size="sm"
-                />
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-1.5 min-w-0">
-                    <span className="text-xs font-medium text-[#edece8] truncate">
-                      {currentMember?.displayName || 'Closer'}
-                    </span>
-                    {isSupervisor && <SupervisorBadge compact />}
-                  </div>
-                  <div className="text-[11px] text-[#71706b] truncate tabular-nums">
-                    {currentMember?.dailyCalls ?? 0} calls/day · {currentMember?.statusText || 'On the phones'}
+            <div ref={presenceMenuRef} className="relative">
+              {isPresenceMenuOpen && (
+                <div
+                  role="menu"
+                  aria-label="Set availability status"
+                  className="absolute bottom-full left-0 right-0 mb-1.5 z-50 rounded-xl border border-[#2c2c29] bg-[#191918] p-1 shadow-xl space-y-0.5"
+                >
+                  {PRESENCE_OPTIONS.map((option) => {
+                    const meta = PRESENCE_META[option];
+                    const selected = myPresence === option;
+                    return (
+                      <button
+                        key={option}
+                        type="button"
+                        role="menuitem"
+                        onClick={() => {
+                          onChangePresence(option);
+                          setIsPresenceMenuOpen(false);
+                        }}
+                        className={`w-full flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg text-xs text-left transition-colors ${
+                          selected
+                            ? 'bg-[#262624] text-white font-medium'
+                            : 'text-[#b5b4ad] hover:bg-[#222220] hover:text-white'
+                        }`}
+                      >
+                        <span className="flex items-center gap-2">
+                          <span
+                            className={`w-2 h-2 rounded-full shrink-0 ${meta.dotClass}`}
+                          />
+                          <span>{meta.label}</span>
+                        </span>
+                        {selected && <Check className="w-3 h-3 text-[#edece8]" />}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+
+              <div className="flex items-center justify-between gap-2 px-2 py-1.5 rounded-xl hover:bg-[#171715] transition-colors">
+                <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                  <button
+                    type="button"
+                    onClick={() => handleNavClick('roster')}
+                    className="shrink-0 rounded-full focus:outline-none"
+                    title="Edit your closer profile, photo & daily calls"
+                  >
+                    <Avatar
+                      name={currentMember?.displayName || 'Closer'}
+                      photoUrl={currentMember?.photoUrl}
+                      size="sm"
+                      presenceStatus={myPresence}
+                      presenceRingClass="ring-[#0f0f0e]"
+                    />
+                  </button>
+                  <div className="min-w-0 flex-1">
+                    <button
+                      type="button"
+                      onClick={() => handleNavClick('roster')}
+                      className="flex items-center gap-1.5 min-w-0 w-full text-left"
+                      title="Open closer roster"
+                    >
+                      <span className="text-xs font-medium text-[#edece8] truncate">
+                        {currentMember?.displayName || 'Closer'}
+                      </span>
+                      {isSupervisor && <SupervisorBadge compact />}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setIsPresenceMenuOpen((prev) => !prev)}
+                      className="flex items-center gap-1 text-[11px] text-[#71706b] hover:text-[#c9c8c2] transition-colors max-w-full"
+                      title="Change availability status"
+                    >
+                      <span className={myPresenceMeta.textClass}>
+                        {myPresenceMeta.label}
+                      </span>
+                      <span>·</span>
+                      <span className="truncate tabular-nums">
+                        {currentMember?.dailyCalls ?? 0} calls
+                      </span>
+                      <ChevronUp className="w-3 h-3 shrink-0 opacity-70" />
+                    </button>
                   </div>
                 </div>
-              </button>
-              <button
-                type="button"
-                onClick={onSignOut}
-                className="p-1.5 text-[#71706b] hover:text-white rounded-lg hover:bg-[#222220] transition-colors shrink-0"
-                title="Sign out"
-              >
-                <LogOut className="w-3.5 h-3.5" />
-              </button>
+                <button
+                  type="button"
+                  onClick={onSignOut}
+                  className="p-1.5 text-[#71706b] hover:text-white rounded-lg hover:bg-[#222220] transition-colors shrink-0"
+                  title="Sign out"
+                >
+                  <LogOut className="w-3.5 h-3.5" />
+                </button>
+              </div>
             </div>
           ) : (
             <div className="flex flex-col items-center gap-1.5 pt-0.5">
@@ -386,12 +442,14 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 type="button"
                 onClick={() => handleNavClick('roster')}
                 className="p-1 rounded-full hover:bg-[#171715] transition-colors"
-                title={currentMember?.displayName || 'Closers'}
+                title={`${currentMember?.displayName || 'Closers'} · ${myPresenceMeta.label}`}
               >
                 <Avatar
                   name={currentMember?.displayName || 'Closer'}
                   photoUrl={currentMember?.photoUrl}
                   size="sm"
+                  presenceStatus={myPresence}
+                  presenceRingClass="ring-[#0f0f0e]"
                 />
               </button>
               <button

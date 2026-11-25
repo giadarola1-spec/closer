@@ -68,7 +68,11 @@ service cloud.firestore {
     // --- Validation Blueprints ---
     function isValidMember(data) {
       return data.keys().hasAll(['uid', 'teamId', 'displayName', 'focus', 'statusText', 'createdAt', 'updatedAt'])
-        && data.keys().hasOnly(['uid', 'teamId', 'displayName', 'focus', 'statusText', 'dailyCalls', 'photoUrl', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly([
+          'uid', 'teamId', 'displayName', 'focus', 'statusText',
+          'dailyCalls', 'photoUrl', 'presenceState', 'lastActiveAt',
+          'createdAt', 'updatedAt'
+        ])
         && isValidId(data.uid)
         && isValidTeamId(data.teamId)
         && data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 60
@@ -84,6 +88,8 @@ service cloud.firestore {
             || data.photoUrl.matches('^data:image/(jpeg|png|webp);base64,.*')
           )
         ))
+        && (!('presenceState' in data) || data.presenceState in ['online', 'busy', 'afk', 'offline'])
+        && (!('lastActiveAt' in data) || data.lastActiveAt is timestamp)
         && data.createdAt is timestamp
         && data.updatedAt is timestamp;
     }
@@ -448,7 +454,8 @@ service cloud.firestore {
           (
             (request.auth.uid == memberId || isAdmin())
             && incoming().diff(existing()).affectedKeys().hasOnly([
-              'teamId', 'displayName', 'focus', 'statusText', 'dailyCalls', 'photoUrl', 'updatedAt'
+              'teamId', 'displayName', 'focus', 'statusText', 'dailyCalls',
+              'photoUrl', 'presenceState', 'lastActiveAt', 'updatedAt'
             ])
           )
           || (

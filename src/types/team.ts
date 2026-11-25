@@ -29,6 +29,8 @@ export interface PostMarginNote {
   points: string[];
 }
 
+export type PresenceStatus = 'online' | 'busy' | 'afk' | 'offline';
+
 export interface TeamMember {
   id: string;
   uid: string;
@@ -38,6 +40,8 @@ export interface TeamMember {
   statusText: string;
   dailyCalls?: number;
   photoUrl?: string;
+  presenceState?: PresenceStatus;
+  lastActiveAt?: any;
   createdAt: any;
   updatedAt: any;
 }

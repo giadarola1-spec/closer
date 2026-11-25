@@ -27,6 +27,7 @@ import { SupervisorBadge } from './SupervisorBadge.tsx';
 import { MentionSuggestions } from './MentionSuggestions.tsx';
 import { extractYouTubeLinks } from '../utils/youtube.ts';
 import { YouTubeThumbnailCard } from './YouTubeThumbnailCard.tsx';
+import { PRESENCE_META, resolveEffectivePresence } from '../utils/presence.ts';
 import {
   ActiveMentionQuery,
   buildMembersByMentionHandle,
@@ -36,6 +37,17 @@ import {
   resolveMentionedMember,
 } from '../utils/mentions.ts';
 
+const MAX_DM_CACHE_THREADS = 30;
+const cachedMessagesByDmId = new Map<string, DirectMessage[]>();
+
+function cacheThreadMessages(dmId: string, list: DirectMessage[]) {
+  if (!cachedMessagesByDmId.has(dmId) && cachedMessagesByDmId.size >= MAX_DM_CACHE_THREADS) {
+    const oldestKey = cachedMessagesByDmId.keys().next().value;
+    if (oldestKey) cachedMessagesByDmId.delete(oldestKey);
+  }
+  cachedMessagesByDmId.set(dmId, list);
+}
+
 interface DirectMessagesViewProps {
   currentMember: TeamMember;
   members: TeamMember[];
@@ -43,6 +55,7 @@ interface DirectMessagesViewProps {
   threads: DirectThread[];
   supervisorIds?: Set<string>;
   selectedUserId: string | null;
+  nowMs?: number;
   onSelectUser: (uid: string) => void;
   onNotify: (msg: string) => void;
 }
@@ -184,12 +197,15 @@ export const DirectMessagesView: React.FC<DirectMessagesViewProps> = ({
   threads,
   supervisorIds,
   selectedUserId,
+  nowMs = Date.now(),
   onSelectUser,
   onNotify,
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [messages, setMessages] = useState<DirectMessage[]>([]);
   const [isLoadingMessages, setIsLoadingMessages] = useState(false);
+  const [showMessageSkeleton, setShowMessageSkeleton] = useState(false);
+  const [showMembersSkeleton, setShowMembersSkeleton] = useState(false);
   const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
   const [mobileShowChat, setMobileShowChat] = useState(Boolean(selectedUserId));
@@ -198,6 +214,8 @@ export const DirectMessagesView: React.FC<DirectMessagesViewProps> = ({
 
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
+  const prevDmIdRef = useRef<string | null>(null);
+  const prevMessagesCountRef = useRef<number>(0);
 
   const membersByHandle = useMemo(() => buildMembersByMentionHandle(members), [members]);
 
@@ -257,12 +275,40 @@ export const DirectMessagesView: React.FC<DirectMessagesViewProps> = ({
   }, [selectedUserId]);
 
   useEffect(() => {
+    if (!isLoadingMembers || members.length > 0) {
+      setShowMembersSkeleton(false);
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      setShowMembersSkeleton(true);
+    }, 140);
+    return () => window.clearTimeout(timer);
+  }, [isLoadingMembers, members.length]);
+
+  useEffect(() => {
     if (!dmId) {
       setMessages([]);
+      setIsLoadingMessages(false);
+      setShowMessageSkeleton(false);
       return;
     }
 
-    setIsLoadingMessages(true);
+    const cached = cachedMessagesByDmId.get(dmId);
+    let skeletonTimer: number | null = null;
+
+    if (cached) {
+      setMessages(cached);
+      setIsLoadingMessages(false);
+      setShowMessageSkeleton(false);
+    } else {
+      setMessages([]);
+      setIsLoadingMessages(true);
+      setShowMessageSkeleton(false);
+      skeletonTimer = window.setTimeout(() => {
+        setShowMessageSkeleton(true);
+      }, 140);
+    }
+
     const messagesPath = `dms/${dmId}/messages`;
     const q = query(
       collection(db, 'dms', dmId, 'messages'),
@@ -272,6 +318,10 @@ export const DirectMessagesView: React.FC<DirectMessagesViewProps> = ({
     const unsub = onSnapshot(
       q,
       (snap) => {
+        if (skeletonTimer !== null) {
+          window.clearTimeout(skeletonTimer);
+          skeletonTimer = null;
+        }
         const list = snap.docs
           .map((d) => ({ id: d.id, ...d.data() }) as DirectMessage)
           .sort((a, b) => {
@@ -279,20 +329,39 @@ export const DirectMessagesView: React.FC<DirectMessagesViewProps> = ({
             const tb = b.createdAt?.toMillis?.() ?? Number.MAX_SAFE_INTEGER;
             return ta - tb;
           });
+        cacheThreadMessages(dmId, list);
         setMessages(list);
         setIsLoadingMessages(false);
+        setShowMessageSkeleton(false);
       },
       (error) => {
+        if (skeletonTimer !== null) {
+          window.clearTimeout(skeletonTimer);
+          skeletonTimer = null;
+        }
         setIsLoadingMessages(false);
+        setShowMessageSkeleton(false);
         handleFirestoreError(error, OperationType.LIST, messagesPath);
       }
     );
 
-    return () => unsub();
+    return () => {
+      if (skeletonTimer !== null) {
+        window.clearTimeout(skeletonTimer);
+      }
+      unsub();
+    };
   }, [dmId, currentMember.uid]);
 
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    const isThreadSwitch = prevDmIdRef.current !== dmId || prevMessagesCountRef.current === 0;
+    if (messages.length > 0) {
+      messagesEndRef.current?.scrollIntoView({
+        behavior: isThreadSwitch ? 'auto' : 'smooth',
+      });
+    }
+    prevDmIdRef.current = dmId;
+    prevMessagesCountRef.current = messages.length;
   }, [messages.length, dmId]);
 
   useEffect(() => {
@@ -487,27 +556,43 @@ export const DirectMessagesView: React.FC<DirectMessagesViewProps> = ({
         </div>
 
         <div className="flex-1 overflow-y-auto p-2 space-y-1">
-          {isLoadingMembers ? (
-            <div className="space-y-1" aria-busy="true" aria-label="Loading closers">
-              {[0, 1, 2, 3].map((idx) => (
-                <div
-                  key={idx}
-                  aria-hidden="true"
-                  className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl"
-                >
-                  <div className="w-6 h-6 rounded-full skeleton-shimmer shrink-0" />
-                  <div className="w-[100px] h-3 rounded-md skeleton-shimmer" />
-                </div>
-              ))}
-            </div>
+          {isLoadingMembers && members.length === 0 ? (
+            showMembersSkeleton ? (
+              <div className="space-y-1 animate-fade-150" aria-busy="true" aria-label="Loading conversations">
+                {[0, 1, 2, 3, 4].map((idx) => (
+                  <div
+                    key={idx}
+                    aria-hidden="true"
+                    className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl"
+                  >
+                    <div className="w-7 h-7 rounded-full skeleton-shimmer shrink-0" />
+                    <div className="min-w-0 flex-1 space-y-1.5">
+                      <div className="flex items-center justify-between gap-2">
+                        <div
+                          className="h-3 rounded-md skeleton-shimmer"
+                          style={{ width: idx % 2 === 0 ? '96px' : '118px' }}
+                        />
+                        <div className="w-7 h-2.5 rounded skeleton-shimmer shrink-0" />
+                      </div>
+                      <div
+                        className="h-2.5 rounded-md skeleton-shimmer"
+                        style={{ width: idx % 2 === 0 ? '72%' : '56%' }}
+                      />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : null
           ) : (
-            <div className="space-y-1 animate-fade-150">
+            <div className="space-y-1">
               {sortedPeople.map((person) => {
                 const isSelected = activeRecipient.uid === person.uid;
                 const thread = threadsByPeerId[person.uid];
                 const isMe = person.uid === currentMember.uid;
                 const previewPrefix =
                   thread && thread.lastSenderId === currentMember.uid ? 'You: ' : '';
+
+                const personPresence = resolveEffectivePresence(person, nowMs);
 
                 return (
                   <button
@@ -524,6 +609,8 @@ export const DirectMessagesView: React.FC<DirectMessagesViewProps> = ({
                       name={person.displayName}
                       photoUrl={person.photoUrl}
                       size="sm"
+                      presenceStatus={personPresence}
+                      presenceRingClass="ring-[#141413]"
                     />
                     <div className="min-w-0 flex-1">
                       <div className="flex items-center justify-between gap-2">
@@ -563,63 +650,137 @@ export const DirectMessagesView: React.FC<DirectMessagesViewProps> = ({
         }`}
       >
         {/* Thread Header */}
-        <div className="px-4 py-3 border-b border-[#222220] bg-[#141413] flex items-center justify-between gap-3 shrink-0">
-          <div className="flex items-center gap-3 min-w-0">
-            <button
-              type="button"
-              onClick={() => setMobileShowChat(false)}
-              className="md:hidden p-1.5 rounded-lg bg-[#1e1e1c] text-[#9c9a92] hover:text-white"
-              title="Back to people"
-            >
-              <ChevronLeft className="w-4 h-4" />
-            </button>
-            <Avatar
-              name={activeRecipient.displayName}
-              photoUrl={activeRecipient.photoUrl}
-              size="sm"
-            />
-            <div className="min-w-0">
-              <div className="flex items-center gap-2">
-                <h2 className="text-sm font-medium text-white truncate">
-                  {activeRecipient.displayName}
-                  {isSelfThread ? ' (Notes to self)' : ''}
-                </h2>
-                {supervisorIds?.has(activeRecipient.uid) && (
-                  <SupervisorBadge compact />
-                )}
+        <div className="px-4 py-3 border-b border-[#222220] bg-[#141413] flex items-center justify-between gap-3 shrink-0 min-h-[60px]">
+          {isLoadingMembers && members.length === 0 ? (
+            showMembersSkeleton ? (
+              <div className="flex items-center gap-3 min-w-0 animate-fade-150" aria-busy="true">
+                <div className="w-7 h-7 rounded-full skeleton-shimmer shrink-0" />
+                <div className="space-y-1.5">
+                  <div className="w-28 h-3.5 rounded-md skeleton-shimmer" />
+                  <div className="w-40 h-2.5 rounded-md skeleton-shimmer" />
+                </div>
               </div>
-              <p className="text-[11px] text-[#8d8c85] truncate">
-                {activeRecipient.statusText || 'On the phones'}
-                {' · '}
-                <span className="tabular-nums">
-                  {activeRecipient.dailyCalls ?? 0} calls/day
-                </span>
-              </p>
+            ) : (
+              <div className="h-9" />
+            )
+          ) : (
+            <div className="flex items-center gap-3 min-w-0">
+              <button
+                type="button"
+                onClick={() => setMobileShowChat(false)}
+                className="md:hidden p-1.5 rounded-lg bg-[#1e1e1c] text-[#9c9a92] hover:text-white"
+                title="Back to people"
+              >
+                <ChevronLeft className="w-4 h-4" />
+              </button>
+              <Avatar
+                name={activeRecipient.displayName}
+                photoUrl={activeRecipient.photoUrl}
+                size="sm"
+                presenceStatus={resolveEffectivePresence(activeRecipient, nowMs)}
+                presenceRingClass="ring-[#141413]"
+              />
+              <div className="min-w-0">
+                <div className="flex items-center gap-2">
+                  <h2 className="text-sm font-medium text-white truncate">
+                    {activeRecipient.displayName}
+                    {isSelfThread ? ' (Notes to self)' : ''}
+                  </h2>
+                  {supervisorIds?.has(activeRecipient.uid) && (
+                    <SupervisorBadge compact />
+                  )}
+                </div>
+                {(() => {
+                  const activePresence = resolveEffectivePresence(activeRecipient, nowMs);
+                  const activePresenceMeta = PRESENCE_META[activePresence];
+                  return (
+                    <p className="text-[11px] text-[#8d8c85] truncate">
+                      <span className={activePresenceMeta.textClass}>
+                        {activePresenceMeta.label}
+                      </span>
+                      {' · '}
+                      {activeRecipient.statusText || 'On the phones'}
+                      {' · '}
+                      <span className="tabular-nums">
+                        {activeRecipient.dailyCalls ?? 0} calls/day
+                      </span>
+                    </p>
+                  );
+                })()}
+              </div>
             </div>
-          </div>
+          )}
 
           <div className="hidden sm:flex items-center gap-1.5 text-[11px] text-[#71706b] shrink-0">
             <Lock className="w-3 h-3" />
             <span>
-              {isSelfThread
-                ? 'Private to you'
-                : `Private · Only you and ${activeRecipient.displayName}`}
+              {isLoadingMembers && members.length === 0
+                ? 'Private thread'
+                : isSelfThread
+                  ? 'Private to you'
+                  : `Private · Only you and ${activeRecipient.displayName}`}
             </span>
           </div>
         </div>
 
         {/* Messages Stream */}
         <div className="flex-1 overflow-y-auto px-4 py-5 space-y-3">
-          {isLoadingMessages ? (
-            <div className="py-12 text-center text-xs text-[#71706b]">
-              Loading messages...
+          {isLoadingMessages || (isLoadingMembers && members.length === 0) ? (
+            showMessageSkeleton || showMembersSkeleton ? (
+              <div
+                className="space-y-4 animate-fade-150"
+                aria-busy="true"
+                aria-label="Loading chat messages"
+              >
+              <div className="flex justify-center py-1" aria-hidden="true">
+                <div className="w-12 h-2.5 rounded-full skeleton-shimmer" />
+              </div>
+
+              <div className="flex flex-col items-start space-y-1.5" aria-hidden="true">
+                <div className="bg-[#191918] border border-[#262624] rounded-2xl px-3.5 py-2.5 space-y-2 w-64 max-w-[78%]">
+                  <div className="h-3 w-full rounded skeleton-shimmer" />
+                  <div className="h-3 w-3/4 rounded skeleton-shimmer" />
+                </div>
+                <div className="w-10 h-2 rounded skeleton-shimmer ml-1" />
+              </div>
+
+              <div className="flex flex-col items-end space-y-1.5" aria-hidden="true">
+                <div className="rounded-2xl px-3.5 py-2.5 bg-[#1e1e1c] border border-[#2a2a27] space-y-2 w-52 max-w-[72%]">
+                  <div className="h-3 w-full rounded skeleton-shimmer" />
+                </div>
+                <div className="rounded-2xl px-3.5 py-2.5 bg-[#1e1e1c] border border-[#2a2a27] space-y-2 w-60 max-w-[75%]">
+                  <div className="h-3 w-full rounded skeleton-shimmer" />
+                  <div className="h-3 w-2/3 rounded skeleton-shimmer" />
+                </div>
+                <div className="w-12 h-2 rounded skeleton-shimmer mr-1" />
+              </div>
+
+              <div className="flex flex-col items-start space-y-1.5" aria-hidden="true">
+                <div className="bg-[#191918] border border-[#262624] rounded-2xl px-3.5 py-2.5 space-y-2 w-56 max-w-[75%]">
+                  <div className="h-3 w-full rounded skeleton-shimmer" />
+                </div>
+                <div className="bg-[#191918] border border-[#262624] rounded-2xl px-3.5 py-2.5 space-y-2 w-40 max-w-[65%]">
+                  <div className="h-3 w-4/5 rounded skeleton-shimmer" />
+                </div>
+                <div className="w-10 h-2 rounded skeleton-shimmer ml-1" />
+              </div>
+
+              <div className="flex flex-col items-end space-y-1.5" aria-hidden="true">
+                <div className="rounded-2xl px-3.5 py-2.5 bg-[#1e1e1c] border border-[#2a2a27] space-y-2 w-48 max-w-[70%]">
+                  <div className="h-3 w-5/6 rounded skeleton-shimmer" />
+                </div>
+                <div className="w-10 h-2 rounded skeleton-shimmer mr-1" />
+              </div>
             </div>
+            ) : null
           ) : messages.length === 0 ? (
             <div className="h-full flex flex-col items-center justify-center text-center px-4 py-12 space-y-2">
               <Avatar
                 name={activeRecipient.displayName}
                 photoUrl={activeRecipient.photoUrl}
                 size="lg"
+                presenceStatus={resolveEffectivePresence(activeRecipient, nowMs)}
+                presenceRingClass="ring-[#141413]"
               />
               <p className="text-sm font-medium text-[#edece8] pt-1">
                 {activeRecipient.displayName}
@@ -631,7 +792,8 @@ export const DirectMessagesView: React.FC<DirectMessagesViewProps> = ({
               </p>
             </div>
           ) : (
-            messages.map((msg, idx) => {
+            <div className="space-y-3">
+              {messages.map((msg, idx) => {
               const isMine = msg.senderId === currentMember.uid;
               const prevMsg = idx > 0 ? messages[idx - 1] : null;
               const nextMsg = idx < messages.length - 1 ? messages[idx + 1] : null;
@@ -726,7 +888,8 @@ export const DirectMessagesView: React.FC<DirectMessagesViewProps> = ({
                   </div>
                 </React.Fragment>
               );
-            })
+            })}
+            </div>
           )}
           <div ref={messagesEndRef} />
         </div>
