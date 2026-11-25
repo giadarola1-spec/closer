@@ -15,7 +15,7 @@ self.addEventListener('push', (event) => {
     payload = { body: event.data.text() };
   }
 
-  const title = typeof payload.title === 'string' && payload.title ? payload.title : 'closer';
+  const title = typeof payload.title === 'string' && payload.title ? payload.title : 'Closer';
   const body = typeof payload.body === 'string' ? payload.body : '';
   const tag = typeof payload.tag === 'string' ? payload.tag : 'closer-notification';
   const data = payload.data && typeof payload.data === 'object' ? payload.data : { channel: 'feed' };
@@ -24,8 +24,8 @@ self.addEventListener('push', (event) => {
     self.registration.showNotification(title, {
       body,
       tag,
-      icon: '/pwa-192x192.png',
-      badge: '/pwa-192x192.png',
+      icon: '/padlock-192.png',
+      badge: '/padlock-192.png',
       renotify: true,
       data,
     })
