@@ -200,10 +200,12 @@ async function generateAndSaveMarginNote(
       (!contentType.includes('application/json') && /<!doctype|<html/i.test(trimmed));
 
     let parsedBody: {
+      ok?: boolean;
       shouldGenerate?: boolean;
       points?: unknown;
       error?: string;
       retryable?: boolean;
+      upstreamCode?: number;
     } | null = null;
 
     if (!looksLikeHtml && trimmed) {
@@ -214,7 +216,15 @@ async function generateAndSaveMarginNote(
       }
     }
 
-    if (!response.ok || looksLikeHtml || !parsedBody) {
+    if (!response.ok || looksLikeHtml || !parsedBody || parsedBody.ok === false) {
+      if (parsedBody && parsedBody.ok === false && parsedBody.error) {
+        return {
+          ok: false,
+          error: parsedBody.error,
+          retryable: parsedBody.retryable !== false,
+        };
+      }
+
       if (
         response.status === 503 ||
         /503|UNAVAILABLE|high demand|overloaded|capacity/i.test(trimmed)
@@ -241,16 +251,30 @@ async function generateAndSaveMarginNote(
       if (looksLikeHtml) {
         return {
           ok: false,
-          error: `Backend returned HTML instead of JSON (HTTP ${response.status}) — the API server may be restarting or unavailable on this URL.`,
+          error: `Backend returned HTML instead of JSON (HTTP ${response.status}) — the server may be restarting or /api is unavailable on this URL.`,
           retryable: true,
         };
       }
+
+      if (!trimmed) {
+        return {
+          ok: false,
+          error: `Server returned an empty response (HTTP ${response.status}) — the request may have timed out or the server restarted.`,
+          retryable: true,
+        };
+      }
+
+      console.warn('Margin note unexpected HTTP response:', {
+        status: response.status,
+        contentType,
+        preview: trimmed.slice(0, 200),
+      });
 
       return {
         ok: false,
         error:
           parsedBody?.error ||
-          `The AI service returned an unexpected response (HTTP ${response.status}).`,
+          `Unexpected response (HTTP ${response.status}): ${trimmed.slice(0, 120)}`,
         retryable:
           typeof parsedBody?.retryable === 'boolean'
             ? parsedBody.retryable
