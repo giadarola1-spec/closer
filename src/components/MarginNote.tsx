@@ -130,7 +130,7 @@ export const MobileMarginNote: React.FC<MarginNoteProps> = ({
   return (
     <aside
       aria-label="Margin note"
-      className="min-[1120px]:hidden mt-2.5 ml-3 pl-3 border-l border-[#262626] animate-fade-150"
+      className="mt-2.5 ml-3 pl-3 border-l border-[#262626] animate-fade-150"
     >
       <MarginNoteContent
         points={points}
@@ -226,7 +226,7 @@ export const MobileMarginNoteStatus: React.FC<MarginNoteStatusProps> = ({
 }) => (
   <aside
     aria-label="Margin note status"
-    className="min-[1120px]:hidden mt-2.5 ml-3 pl-3 border-l border-[#262626] animate-fade-150"
+    className="mt-2.5 ml-3 pl-3 border-l border-[#262626] animate-fade-150"
   >
     <MarginNoteStatusInner
       requestState={requestState}

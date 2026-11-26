@@ -45,17 +45,24 @@ import {
   TeamMember,
   TeamPost,
   PostComment,
+  DailyCallStats,
 } from '../types/team.ts';
 import { Avatar } from './Avatar.tsx';
 import { SupervisorBadge } from './SupervisorBadge.tsx';
 import { MentionSuggestions } from './MentionSuggestions.tsx';
 import {
-  DesktopMarginNote,
   MobileMarginNote,
-  DesktopMarginNoteStatus,
   MobileMarginNoteStatus,
   MarginNoteRequestStatus,
 } from './MarginNote.tsx';
+import { DailyCallActivity } from './DailyCallActivity.tsx';
+import { CloserStoriesBar } from './CloserStoriesBar.tsx';
+import { PipelineBreakdown } from './PipelineBreakdown.tsx';
+import {
+  buildCloserCallChartData,
+  CallChartRange,
+  DEFAULT_DAILY_CALL_GOAL,
+} from '../services/ringCentralCalls.ts';
 import { TweetCard, TweetSkeleton } from '@/components/ui/tweet-card';
 import {
   MAX_POST_IMAGE_BYTES,
@@ -77,6 +84,8 @@ import {
 interface TeamFeedViewProps {
   currentMember: TeamMember;
   members: TeamMember[];
+  dailyCallStats: DailyCallStats[];
+  isLoadingMembers?: boolean;
   supervisorIds: Set<string>;
   isSupervisor: boolean;
   composerRef: React.RefObject<HTMLTextAreaElement | null>;
@@ -1370,47 +1379,27 @@ const PostCard: React.FC<PostCardProps> = ({
       : null;
 
   return (
-    <div className="min-[1120px]:grid min-[1120px]:grid-cols-[minmax(0,640px)_minmax(288px,368px)] min-[1120px]:items-start">
-      <div className="min-w-0">
-        <TweetCard
-          tweet={tweetPayload}
-          logo="closer"
-          title={post.title || undefined}
-          imageUrl={safeImageUrl || null}
-          timestamp={formatRelativeTime(post.createdAt)}
-          pinned={post.pinned}
-          authorBadge={authorIsSupervisor ? <SupervisorBadge compact /> : undefined}
-          headerActions={headerActions}
-          footer={footerContent}
-          onAuthorClick={authorMember ? () => onOpenDm(post.authorId) : undefined}
-          onMentionClick={(handle) => {
-            const target = resolveMentionedMember(handle, membersByHandle);
-            if (target) {
-              onOpenDm(target.uid);
-            }
-          }}
-        />
-        {activeMarginNote ? (
-          <MobileMarginNote
-            marginNote={activeMarginNote}
-            canRemove={canRemoveMarginNote}
-            removing={removingMarginNote}
-            onCopyText={onCopyText}
-            onRemove={handleRemoveMarginNote}
-          />
-        ) : (
-          marginNoteStatus && (
-            <MobileMarginNoteStatus
-              requestState={marginNoteStatus}
-              onRetry={() => onRequestMarginNote(Boolean(marginNoteStatus.force))}
-              onDismiss={onDismissMarginNoteStatus}
-            />
-          )
-        )}
-      </div>
-
+    <div className="min-w-0">
+      <TweetCard
+        tweet={tweetPayload}
+        logo="closer"
+        title={post.title || undefined}
+        imageUrl={safeImageUrl || null}
+        timestamp={formatRelativeTime(post.createdAt)}
+        pinned={post.pinned}
+        authorBadge={authorIsSupervisor ? <SupervisorBadge compact /> : undefined}
+        headerActions={headerActions}
+        footer={footerContent}
+        onAuthorClick={authorMember ? () => onOpenDm(post.authorId) : undefined}
+        onMentionClick={(handle) => {
+          const target = resolveMentionedMember(handle, membersByHandle);
+          if (target) {
+            onOpenDm(target.uid);
+          }
+        }}
+      />
       {activeMarginNote ? (
-        <DesktopMarginNote
+        <MobileMarginNote
           marginNote={activeMarginNote}
           canRemove={canRemoveMarginNote}
           removing={removingMarginNote}
@@ -1419,7 +1408,7 @@ const PostCard: React.FC<PostCardProps> = ({
         />
       ) : (
         marginNoteStatus && (
-          <DesktopMarginNoteStatus
+          <MobileMarginNoteStatus
             requestState={marginNoteStatus}
             onRetry={() => onRequestMarginNote(Boolean(marginNoteStatus.force))}
             onDismiss={onDismissMarginNoteStatus}
@@ -1433,6 +1422,8 @@ const PostCard: React.FC<PostCardProps> = ({
 export const TeamFeedView: React.FC<TeamFeedViewProps> = ({
   currentMember,
   members,
+  dailyCallStats,
+  isLoadingMembers = false,
   supervisorIds,
   isSupervisor,
   composerRef,
@@ -1466,6 +1457,8 @@ export const TeamFeedView: React.FC<TeamFeedViewProps> = ({
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const sortMenuRef = useRef<HTMLDivElement | null>(null);
+  const [selectedCloserId, setSelectedCloserId] = useState<string | null>(null);
+  const [callChartRange, setCallChartRange] = useState<CallChartRange>('7d');
 
   const handleRequestMarginNote = async (
     postId: string,
@@ -1856,83 +1849,145 @@ export const TeamFeedView: React.FC<TeamFeedViewProps> = ({
     [title, body]
   );
 
+  const closerChartData = useMemo(
+    () =>
+      buildCloserCallChartData(
+        members,
+        dailyCallStats,
+        callChartRange,
+        DEFAULT_DAILY_CALL_GOAL
+      ),
+    [members, dailyCallStats, callChartRange]
+  );
+
+  const effectiveCloserId = useMemo(() => {
+    if (
+      selectedCloserId &&
+      closerChartData.closers.some((c) => c.id === selectedCloserId)
+    ) {
+      return selectedCloserId;
+    }
+    const selfCloser = closerChartData.closers.find(
+      (c) => c.uid === currentMember.uid
+    );
+    return selfCloser?.id ?? closerChartData.closers[0]?.id ?? null;
+  }, [selectedCloserId, closerChartData.closers, currentMember.uid]);
+
+  const hasFeedSubheader =
+    isComposerOpen || (!isLoadingPosts && posts.length > 0);
+
   return (
-    <div className="w-full max-w-[1060px] py-6 sm:py-8 px-4 sm:px-6 space-y-5 font-['Inter']">
-      {/* Search + Alerts + New Post (aligned to left post column width) */}
-      <div className="flex flex-wrap sm:flex-nowrap items-center gap-2 w-full max-w-[640px]">
-        <div className="relative flex-1 min-w-[200px]">
-          <Search className="w-3.5 h-3.5 text-[#71706b] absolute left-3 top-1/2 -translate-y-1/2" />
-          <input
-            type="text"
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Search posts..."
-            className="w-full bg-[#191918] border border-[#262624] rounded-xl pl-8 pr-7 py-2 text-xs text-white placeholder-[#71706b] outline-none focus:border-[#42423e] transition-colors"
+    <div className="@container w-full max-w-[1480px] py-5 sm:py-7 px-4 sm:px-6 font-['Inter']">
+      <div className="grid grid-cols-1 gap-y-4 @min-[900px]:grid-cols-2 @min-[900px]:gap-x-6 @min-[900px]:items-start">
+        {/* Sticky Left Vertical Stats & Profile Avatar Column (Anchored While Feed Scrolls) */}
+        <aside
+          className={`order-2 @min-[900px]:order-none @min-[900px]:col-start-1 @min-[900px]:row-start-1 ${
+            hasFeedSubheader ? '@min-[900px]:row-span-3' : '@min-[900px]:row-span-2'
+          } @min-[900px]:sticky @min-[900px]:top-5 min-w-0 space-y-3`}
+        >
+          <CloserStoriesBar
+            closers={closerChartData.closers}
+            selectedCloserId={effectiveCloserId}
+            onSelectCloser={setSelectedCloserId}
+            range={callChartRange}
+            isLoading={isLoadingMembers}
           />
-          {searchQuery && (
+
+          <DailyCallActivity
+            members={members}
+            dailyCallStats={dailyCallStats}
+            currentUserId={currentMember.uid}
+            selectedCloserId={effectiveCloserId}
+            range={callChartRange}
+            onRangeChange={setCallChartRange}
+            chartDataOverride={closerChartData}
+            isLoading={isLoadingMembers}
+          />
+
+          <PipelineBreakdown />
+        </aside>
+
+        {/* Right Column Row 1: Search + Alerts + New Post Aligned Above Feed */}
+        <div className="order-1 @min-[900px]:order-none @min-[900px]:col-start-2 @min-[900px]:row-start-1 @min-[900px]:self-center w-full">
+          <div className="flex flex-wrap sm:flex-nowrap items-center gap-2 w-full">
+            <div className="relative flex-1 min-w-[140px]">
+              <Search className="w-3.5 h-3.5 text-[#71706b] absolute left-3 top-1/2 -translate-y-1/2" />
+              <input
+                type="text"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="Search posts..."
+                className="w-full bg-[#191918] border border-[#262624] rounded-xl pl-8 pr-7 py-2 text-xs text-white placeholder-[#71706b] outline-none focus:border-[#42423e] transition-colors"
+              />
+              {searchQuery && (
+                <button
+                  type="button"
+                  onClick={() => setSearchQuery('')}
+                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[#71706b] hover:text-white"
+                  title="Clear search"
+                >
+                  <X className="w-3 h-3" />
+                </button>
+              )}
+            </div>
+
             <button
               type="button"
-              onClick={() => setSearchQuery('')}
-              className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[#71706b] hover:text-white"
-              title="Clear search"
+              onClick={onOpenNotificationSettings}
+              className={`flex items-center gap-1.5 px-3 py-2 rounded-xl border text-xs transition-colors shrink-0 whitespace-nowrap ${
+                notificationsEnabled
+                  ? 'bg-[#191918] border-[#262624] text-[#edece8] hover:border-[#3d3d39]'
+                  : 'bg-[#141413] border-[#262624] text-[#71706b] hover:text-white hover:border-[#363632]'
+              }`}
+              title="Edit post notification & sound settings"
             >
-              <X className="w-3 h-3" />
+              {notificationsEnabled ? (
+                <Bell className="w-3.5 h-3.5" />
+              ) : (
+                <BellOff className="w-3.5 h-3.5" />
+              )}
+              <span className="hidden sm:inline">
+                {notificationsEnabled ? 'Alerts' : 'Muted'}
+              </span>
             </button>
-          )}
+
+            <button
+              type="button"
+              onClick={() => {
+                if (isComposerOpen) {
+                  setIsComposerOpen(false);
+                } else {
+                  handleOpenComposer();
+                }
+              }}
+              aria-expanded={isComposerOpen}
+              className={`inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-medium transition-colors shrink-0 whitespace-nowrap ${
+                isComposerOpen
+                  ? 'bg-[#262624] border border-[#3d3d39] text-white hover:bg-[#2f2f2c]'
+                  : 'bg-white hover:bg-[#e0dfd9] text-black border border-transparent'
+              }`}
+              title={isComposerOpen ? 'Close post composer' : 'Write a new post'}
+            >
+              {isComposerOpen ? (
+                <X className="w-3.5 h-3.5" />
+              ) : (
+                <Plus className="w-3.5 h-3.5" />
+              )}
+              <span>
+                {isComposerOpen ? 'Close' : hasDraft ? 'Resume draft' : 'New post'}
+              </span>
+            </button>
+          </div>
         </div>
 
-        <button
-          type="button"
-          onClick={onOpenNotificationSettings}
-          className={`flex items-center gap-1.5 px-3 py-2 rounded-xl border text-xs transition-colors shrink-0 whitespace-nowrap ${
-            notificationsEnabled
-              ? 'bg-[#191918] border-[#262624] text-[#edece8] hover:border-[#3d3d39]'
-              : 'bg-[#141413] border-[#262624] text-[#71706b] hover:text-white hover:border-[#363632]'
-          }`}
-          title="Edit post notification & sound settings"
-        >
-          {notificationsEnabled ? (
-            <Bell className="w-3.5 h-3.5" />
-          ) : (
-            <BellOff className="w-3.5 h-3.5" />
-          )}
-          <span className="hidden sm:inline">
-            {notificationsEnabled ? 'Alerts' : 'Muted'}
-          </span>
-        </button>
+        {/* Feed Subheader (Composer + Filter Tabs & Sort) Spanning Expanded Right Post Column */}
+        {hasFeedSubheader && (
+          <div className="order-3 @min-[900px]:order-none @min-[900px]:col-start-2 @min-[900px]:row-start-2 min-w-0 w-full space-y-3">
 
-        <button
-          type="button"
-          onClick={() => {
-            if (isComposerOpen) {
-              setIsComposerOpen(false);
-            } else {
-              handleOpenComposer();
-            }
-          }}
-          aria-expanded={isComposerOpen}
-          className={`inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-medium transition-colors shrink-0 whitespace-nowrap ${
-            isComposerOpen
-              ? 'bg-[#262624] border border-[#3d3d39] text-white hover:bg-[#2f2f2c]'
-              : 'bg-white hover:bg-[#e0dfd9] text-black border border-transparent'
-          }`}
-          title={isComposerOpen ? 'Close post composer' : 'Write a new post'}
-        >
-          {isComposerOpen ? (
-            <X className="w-3.5 h-3.5" />
-          ) : (
-            <Plus className="w-3.5 h-3.5" />
-          )}
-          <span>{isComposerOpen ? 'Close' : hasDraft ? 'Resume draft' : 'New post'}</span>
-        </button>
-      </div>
-
-      {/* Main Feed Workspace */}
-      <div className="min-w-0 w-full space-y-4">
         {isComposerOpen && (
           <form
             onSubmit={handlePublish}
-            className="w-full max-w-[640px] bg-[#191918] border border-[#2a2a27] rounded-2xl p-4 focus-within:border-[#42423e] transition-colors space-y-2.5"
+            className="w-full bg-[#191918] border border-[#2a2a27] rounded-2xl p-4 focus-within:border-[#42423e] transition-colors space-y-2.5"
           >
               <div className="flex items-center justify-between gap-2 pb-1">
                 <span className="text-xs font-medium text-[#edece8]">New post</span>
@@ -2126,7 +2181,7 @@ export const TeamFeedView: React.FC<TeamFeedViewProps> = ({
 
           {/* Feed Filter Tabs + Side Sort Selector */}
           {!isLoadingPosts && posts.length > 0 && (
-            <div className="flex flex-wrap items-center justify-between gap-2 w-full max-w-[640px]">
+            <div className="flex flex-wrap items-center justify-between gap-2 w-full">
               <div className="inline-flex items-center p-0.5 bg-[#191918] border border-[#262624] rounded-xl">
                 <button
                   type="button"
@@ -2222,16 +2277,23 @@ export const TeamFeedView: React.FC<TeamFeedViewProps> = ({
               </div>
             </div>
           )}
+          </div>
+        )}
 
-          {/* Feed Stream (Left post column + selective tethered margin notes on right) */}
+        {/* Right Column: Expanded Main Post Feed */}
+        <div
+          className={`order-4 @min-[900px]:order-none min-w-0 w-full @min-[900px]:col-start-2 ${
+            hasFeedSubheader ? '@min-[900px]:row-start-3' : '@min-[900px]:row-start-2'
+          }`}
+        >
           {isLoadingPosts ? (
-            <div className="space-y-3 pb-10 max-w-[640px]" aria-busy="true" aria-label="Loading posts">
+            <div className="space-y-3 pb-10 w-full" aria-busy="true" aria-label="Loading posts">
               <TweetSkeleton />
               <TweetSkeleton />
               <TweetSkeleton />
             </div>
           ) : filteredPosts.length === 0 ? (
-            <div className="max-w-[640px] bg-[#191918] border border-[#262624] rounded-2xl p-8 text-center space-y-2.5 animate-fade-150">
+            <div className="w-full bg-[#191918] border border-[#262624] rounded-2xl p-8 text-center space-y-2.5 animate-fade-150">
               <p className="text-sm text-[#edece8] font-medium">
                 {feedFilter === 'pinned' && !searchQuery
                   ? 'No pinned posts'
@@ -2303,6 +2365,7 @@ export const TeamFeedView: React.FC<TeamFeedViewProps> = ({
               ))}
             </div>
           )}
+        </div>
       </div>
     </div>
   );

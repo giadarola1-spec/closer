@@ -190,3 +190,44 @@ export interface SupervisorStatusResponse {
   configured: boolean;
   mode: 'env' | 'claimed' | 'unconfigured';
 }
+
+export interface DailyCallStatRow {
+  id: string;
+  uid: string;
+  name: string;
+  ext: string;
+  liveTalkSeconds: number;
+  outbound: number;
+  connected: number;
+  inbound: number;
+  total: number;
+}
+
+export interface DailyCallStats {
+  id: string;
+  date: string;
+  teamId: (typeof ACCEPTED_TEAM_IDS)[number];
+  rows: DailyCallStatRow[];
+  updatedByUid: string;
+  updatedByName: string;
+  updatedAt: any;
+}
+
+export interface FloorStatLogEntry {
+  id: string;
+  metric: 'dmSpoken' | 'mql' | 'sql' | 'opportunity';
+  uid: string;
+  userName: string;
+  photoURL: string;
+  createdAt: number;
+}
+
+export interface FloorStatsDoc {
+  id: string;
+  dmSpoken?: number;
+  mql?: number;
+  sql?: number;
+  opportunity?: number;
+  logs: FloorStatLogEntry[];
+  updatedAt: any;
+}

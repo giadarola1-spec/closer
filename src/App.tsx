@@ -33,6 +33,7 @@ import {
   NotificationPreferences,
   PostAlert,
   SupervisorRecord,
+  DailyCallStats,
 } from './types/team.ts';
 import { Sidebar } from './components/Sidebar.tsx';
 import { TeamFeedView } from './components/TeamFeedView.tsx';
@@ -84,6 +85,7 @@ export default function App() {
   const [posts, setPosts] = useState<TeamPost[]>([]);
   const [threads, setThreads] = useState<DirectThread[]>([]);
   const [supervisors, setSupervisors] = useState<SupervisorRecord[]>([]);
+  const [dailyCallStats, setDailyCallStats] = useState<DailyCallStats[]>([]);
   const [isLoadingPosts, setIsLoadingPosts] = useState(true);
   const [isLoadingMembers, setIsLoadingMembers] = useState(true);
 
@@ -271,6 +273,7 @@ export default function App() {
         setPosts([]);
         setThreads([]);
         setSupervisors([]);
+        setDailyCallStats([]);
         setSupervisorToken(null);
         setIsSupervisorModalOpen(false);
         setSupervisorError(null);
@@ -672,11 +675,29 @@ export default function App() {
       }
     );
 
+    const callStatsQuery = query(
+      collection(db, 'daily_call_stats'),
+      where('teamId', 'in', [...ACCEPTED_TEAM_IDS])
+    );
+    const unsubCallStats = onSnapshot(
+      callStatsQuery,
+      (snap) => {
+        const list = snap.docs.map(
+          (d) => ({ id: d.id, ...d.data() }) as DailyCallStats
+        );
+        setDailyCallStats(list);
+      },
+      (error) => {
+        handleFirestoreError(error, OperationType.LIST, 'daily_call_stats');
+      }
+    );
+
     return () => {
       unsubMembers();
       unsubPosts();
       unsubDms();
       unsubSupervisors();
+      unsubCallStats();
     };
   }, [authReady, user, profileReady]);
 
@@ -1330,7 +1351,7 @@ export default function App() {
         onCloseMobile={() => setIsMobileNavOpen(false)}
       />
 
-      <div className="flex-1 flex flex-col min-w-0 h-screen overflow-y-auto bg-[#141413]">
+      <div className="flex-1 flex flex-col min-w-0 h-screen overflow-hidden bg-[#141413]">
         <div className="lg:hidden h-12 border-b border-[#222220] bg-[#0f0f0e] flex items-center px-4 justify-between shrink-0 font-['Inter']">
           <button
             type="button"
@@ -1358,7 +1379,7 @@ export default function App() {
           </button>
         </div>
 
-        <main className="flex-1 h-full overflow-y-auto">
+        <main className="flex-1 min-h-0 overflow-y-auto">
           {activeChannel === 'roster' ? (
             <RosterView
               members={members}
@@ -1389,6 +1410,8 @@ export default function App() {
             <TeamFeedView
               currentMember={currentMember}
               members={members}
+              dailyCallStats={dailyCallStats}
+              isLoadingMembers={isLoadingMembers}
               supervisorIds={supervisorIds}
               isSupervisor={isSupervisor}
               composerRef={composerRef}

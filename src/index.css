@@ -71,6 +71,15 @@ select:focus-visible {
   animation: fadeIn150 150ms ease-out;
 }
 
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
 @keyframes chromaticStaticShift {
   0% {
     transform: translate3d(0px, 0px, 0);
